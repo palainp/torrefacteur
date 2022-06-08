@@ -9,11 +9,16 @@ module Main (Time : Mirage_time.S) (S: Tcpip.Stack.V4V6) (C : Cohttp_lwt.S.Clien
 
   let start _time _stack ctx =
 
-    Tor.update_routers ctx >>= fun cfg_json ->
-    let rev = Cow.Json.find cfg_json ["build_revision"] in
-	Log.info (fun f -> f "the revision is %s" (Cow.Json.to_string rev) );
+(*    Tor.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->*)
+    Tor.get_file ctx "./site/index/index.json" >>= fun str ->
+    let cfg_json = Ezjsonm.from_string str in
 
-    Tor.create_circuit cfg_json >>= fun () ->
+    Tor.get_last_exit_list ctx cfg_json >>= fun exit_nodes ->
+    Tor.get_last_relay_list ctx cfg_json >>= fun relay_nodes ->
 
-	Lwt.return_unit
+    Tor.create_circuit exit_nodes relay_nodes >>= fun circuit ->
+    (* as a current testing code create circuit outputs a string with all ips in the circuit... *)
+    Log.debug (fun f -> f "The circuit is %s" circuit);
+
+    Lwt.return_unit
 end

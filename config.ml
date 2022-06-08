@@ -7,7 +7,7 @@ let main =
       package "ethernet";
       package ~min:"6.0.0" "mirage-protocols";
       package "cohttp-mirage";
-      package "cow" ; (* for Json *)
+      package "ezjsonm" ;
     ]
     "Unikernel.Main" (time @-> stackv4v6 @-> http_client @-> job)
 

@@ -15,15 +15,18 @@
  *)
 
 open Lwt.Infix
+open Circuits
 
 (*
    The following should be compatible with:
    https://gitlab.torproject.org/tpo/core/torspec
 *)
-module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Cohttp: Cohttp_lwt.S.Client) = struct
+module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Cohttp: Cohttp_lwt.S.Client) = struct
 
     let log_src = Logs.Src.create "tor-protocol" ~doc:"Tor protocol"
     module Log = (val Logs.src_log log_src : Logs.LOG)
+
+    module Tcp = Stack.TCPV4
 
     (*
         Currently https leads to Fatal error: exception Failure("connect: authentication failure: invalid certificate chain")
@@ -136,17 +139,69 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Cohttp: Cohttp_lw
         (* TODO: check for the sha256 against the result in last_list_info *)
         Lwt.return nodes
 
+(*
+5.3. Creating circuits
+
+   When creating a circuit through the network, the circuit creator
+   (OP) performs the following steps:
+
+      1. Choose an onion router as an end node (R_N):
+         * N MAY be 1 for non-anonymous directory mirror, introduction point,
+           or service rendezvous connections.
+         * N SHOULD be 3 or more for anonymous connections.
+         Some end nodes accept streams (see 6.1), others are introduction
+         or rendezvous points (see rend-spec-{v2,v3}.txt).
+
+      2. Choose a chain of (N-1) onion routers (R_1...R_N-1) to constitute
+         the path, such that no router appears in the path twice.
+*)
     let create_circuit exit relay n =
+        (* 1. *)
         let rnd_exit = Random.int (List.length exit) in
         let circuit = Circuits.create (List.nth exit rnd_exit) in
+        (* 2. *)
         let rec add_relays n circuit =
             match n with
             | 0 -> circuit
             | x -> 
                 let rnd_relay = Random.int (List.length relay) in
+                (* TODO: ensure that no router appears in the path twice *)
                 let circuit = Circuits.add_relay circuit (List.nth relay rnd_relay) in
                 add_relays (x-1) circuit
         in
         Lwt.return (add_relays n circuit)
+
+(*
+      3. If not already connected to the first router in the chain,
+         open a new connection to that router.
+
+      4. Choose a circID not already in use on the connection with the
+         first router in the chain; send a CREATE/CREATE2 cell along
+         the connection, to be received by the first onion router.
+
+      5. Wait until a CREATED/CREATED2 cell is received; finish the
+         handshake and extract the forward key Kf_1 and the backward
+         key Kb_1.
+
+      6. For each subsequent onion router R (R_2 through R_N), extend
+         the circuit to R.
+*)
+    let connect_circuit stack circuit =
+        (* 3. *)
+        let first_node = List.hd circuit.relay in
+        Tcp.create_connection (Stack.tcpv4 stack) (first_node.ip_addr, first_node.port) >|= function
+        | Error e ->
+            Log.err (fun m -> m "error %a while establishing tcp connection to %a:%d"
+                    Tcp.pp_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
+            Error ()
+        | Ok _flow ->
+            Log.debug (fun m -> m "established new outgoing TCP connection to %a:%d"
+                      Ipaddr.V4.pp first_node.ip_addr first_node.port);
+        (* 4. *)
+            let _circID = Random.bits in
+        (* assert circID <> 0 and was never used with the first node *)
+        (* 5. *)
+        (* 6. *)
+            Ok ()
 
 end

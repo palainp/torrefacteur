@@ -107,7 +107,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Cohttp: Cohttp_lw
         get_last_exit_list_info cfg >>= fun last_list_info ->
         Log.debug (fun f -> f "last exit-lists info list: %s" (Ezjsonm.value_to_string last_list_info) );
         let list_name = Ezjsonm.value_to_string (Ezjsonm.find last_list_info ["path"]) in
-        (* TODO: remove headint and trailing quote in list_name *)
+        (* TODO: remove heading and trailing quote in list_name *)
     (*  let path = String.concat "/" ["https://collector.torproject.org/index/"; path; list_name] in *)
         let path = String.concat "/" ["./site"; "exit-lists"; list_name] in
         get_file ctx path >>= fun nodes ->
@@ -129,7 +129,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Cohttp: Cohttp_lw
         get_last_relay_list_info cfg >>= fun last_list_info ->
         Log.debug (fun f -> f "last server-descriptors info list: %s" (Ezjsonm.value_to_string last_list_info) );
         let list_name = Ezjsonm.value_to_string (Ezjsonm.find last_list_info ["path"]) in
-        (* TODO: remove headint and trailing quote in list_name *)
+        (* TODO: remove heading and trailing quote in list_name *)
     (*  let path = String.concat "/" ["https://collector.torproject.org/index/"; path; list_name] in *)
         let path = String.concat "/" ["./site"; "relay-descriptors"; "server-descriptors"; list_name] in
         get_file ctx path >>= fun nodes ->

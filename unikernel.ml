@@ -23,7 +23,7 @@ module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Stack: Tcpip.Stack.V4
     let log_src = Logs.Src.create "torrefacteur" ~doc:"Tor test & dev"
     module Log = (val Logs.src_log log_src : Logs.LOG)
 
-    let start _rnadom _time _stack ctx =
+    let start _random _time _stack ctx =
         Random.self_init () ;
 
 (*        Tor.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->*)

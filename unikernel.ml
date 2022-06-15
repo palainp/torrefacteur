@@ -14,9 +14,12 @@ module Main (Time : Mirage_time.S) (S: Tcpip.Stack.V4V6) (C : Cohttp_lwt.S.Clien
     let cfg_json = Ezjsonm.from_string str in
 
     Tor.get_last_exit_list ctx cfg_json >>= fun exit_nodes ->
-    let exit_nodes = Nodes.parse_exit_db exit_nodes in
+    let exit_nodes = Nodes.Exit.parse_db exit_nodes in
+    Nodes.Exit.print_list exit_nodes ;
+
     Tor.get_last_relay_list ctx cfg_json >>= fun relay_nodes ->
-    let relay_nodes = Nodes.parse_relay_db relay_nodes in
+    let relay_nodes = Nodes.Relay.parse_db relay_nodes in
+    Nodes.Relay.print_list relay_nodes ;
 
     Tor.create_circuit exit_nodes relay_nodes >>= fun circuit ->
     (* as a current testing code create circuit outputs a string with all ips in the circuit... *)

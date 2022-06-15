@@ -1,29 +1,46 @@
+(*
+ * Copyright (c) 2022 Pierre Alain <pierre.alain@tuta.io>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ *)
+
 open Lwt.Infix
 
-module Main (Time : Mirage_time.S) (S: Tcpip.Stack.V4V6) (C : Cohttp_lwt.S.Client) = struct
+module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Stack: Tcpip.Stack.V4V6) (Cohttp: Cohttp_lwt.S.Client) = struct
 
-  module Tor = Tor.Make(S)(C)
+    module Tor = Tor.Make(Rand)(Stack)(Cohttp)
 
-  let log_src = Logs.Src.create "torrefacteur" ~doc:"Tor test & dev"
-  module Log = (val Logs.src_log log_src : Logs.LOG)
+    let log_src = Logs.Src.create "torrefacteur" ~doc:"Tor test & dev"
+    module Log = (val Logs.src_log log_src : Logs.LOG)
 
-  let start _time _stack ctx =
+    let start _rnadom _time _stack ctx =
+        Random.self_init () ;
 
-(*    Tor.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->*)
-    Tor.get_file ctx "./site/index/index.json" >>= fun str ->
-    let cfg_json = Ezjsonm.from_string str in
+(*        Tor.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->*)
+        Tor.get_file ctx "./site/index/index.json" >>= fun str ->
+        let cfg_json = Ezjsonm.from_string str in
 
-    Tor.get_last_exit_list ctx cfg_json >>= fun exit_nodes ->
-    let exit_nodes = Nodes.Exit.parse_db exit_nodes in
-    Nodes.Exit.print_list exit_nodes ;
+        Tor.get_last_exit_list ctx cfg_json >>= fun exit_nodes ->
+        let exit_nodes = Nodes.Exit.parse_db exit_nodes in
+        (*Nodes.Exit.print_list exit_nodes ;*)
 
-    Tor.get_last_relay_list ctx cfg_json >>= fun relay_nodes ->
-    let relay_nodes = Nodes.Relay.parse_db relay_nodes in
-    Nodes.Relay.print_list relay_nodes ;
+        Tor.get_last_relay_list ctx cfg_json >>= fun relay_nodes ->
+        let relay_nodes = Nodes.Relay.parse_db relay_nodes in
+        (*Nodes.Relay.print_list relay_nodes ;*)
 
-    Tor.create_circuit exit_nodes relay_nodes >>= fun circuit ->
-    (* as a current testing code create circuit outputs a string with all ips in the circuit... *)
-    Log.debug (fun f -> f "The circuit is %s" circuit);
+        Tor.create_circuit exit_nodes relay_nodes 10 >>= fun circuit ->
+        (* as a current testing code create circuit outputs a string with all ips in the circuit... *)
+        Log.info (fun f -> f "The circuit is %s" (Circuits.to_string circuit));
 
-    Lwt.return_unit
+        Lwt.return_unit
 end

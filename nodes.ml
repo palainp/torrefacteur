@@ -1,8 +1,24 @@
+(*
+ * Copyright (c) 2022 Pierre Alain <pierre.alain@tuta.io>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ *)
 
 let src = Logs.Src.create "tor-nodes" ~doc:"Nodes for tor protocol"
 module Log = (val Logs.src_log src : Logs.LOG)
 
 module Exit = struct
+
     type t = {
         id : Hex.t ;
         ip_addr : Ipaddr.V4.t list ;
@@ -36,6 +52,7 @@ module Exit = struct
                     let id = List.nth line 1 in
                     read_entries db (List.cons {id=Hex.of_string id ; ip_addr=[]} acc)
                 else if ( String.starts_with ~prefix:"ExitAddress" s ) then (* add a new ip for the last id *)
+                    (* what should we have to do with those multiple ips ? *)
                     let last_item = List.hd acc in
                     let line = String.split_on_char ' ' s in
                     let ip = List.nth line 1 in
@@ -46,7 +63,10 @@ module Exit = struct
         in
         let db = read_header db in
         read_entries db []
-    
+
+    let to_string node =
+        Ipaddr.V4.to_string (List.hd node.ip_addr) (* print the first ip... *)
+
     let rec print_list db =
         let rec print_ip iplist =
             match iplist with
@@ -56,6 +76,7 @@ module Exit = struct
         match db with
         | e::db -> Log.debug (fun f -> f "Exit Node %s : " (Hex.to_string e.id)); print_ip (e.ip_addr) ; print_list db
         | [] -> ()
+
 end
 
 module Relay = struct
@@ -65,7 +86,7 @@ module Relay = struct
         ip_addr : Ipaddr.V4.t ;
         port : Int.t ;
     }
-    
+
     (* Format is:
     @type server-descriptor 1.0
     router NAME IPV4 9001 0 0
@@ -109,7 +130,7 @@ module Relay = struct
     -----END SIGNATURE-----
     
     *)
-    
+
     let parse_db db =
         let db = String.split_on_char '\n' db in
         let rec read_entries db acc =
@@ -127,9 +148,12 @@ module Relay = struct
         in
         read_entries db []
 
+    let to_string node =
+        String.concat ":" [(Ipaddr.V4.to_string node.ip_addr) ; (Int.to_string node.port)]
+
     let rec print_list db =
         match db with
-        | e::db -> Log.debug (fun f -> f "Relay Node %s : %s:%d" (Hex.to_string e.id) (Ipaddr.V4.to_string e.ip_addr) e.port) ; print_list db
+        | e::db -> Log.debug (fun f -> f "Relay Node %s : %s" (Hex.to_string e.id) (to_string e)) ; print_list db
         | [] -> ()
 
 end

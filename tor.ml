@@ -21,12 +21,14 @@ open Circuits
    The following should be compatible with:
    https://gitlab.torproject.org/tpo/core/torspec
 *)
-module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Cohttp: Cohttp_lwt.S.Client) = struct
+module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (Clock: Mirage_clock.PCLOCK) (Cohttp: Cohttp_lwt.S.Client) = struct
 
     let log_src = Logs.Src.create "tor-protocol" ~doc:"Tor protocol"
     module Log = (val Logs.src_log log_src : Logs.LOG)
 
-    module Tcp = Stack.TCPV4
+    module TCP = Stack.TCPV4
+    module TLS = Tls_mirage.Make(TCP)
+    module X509 = Tls_mirage.X509 (KV)(Clock)
 
     (*
         Currently https leads to Fatal error: exception Failure("connect: authentication failure: invalid certificate chain")
@@ -156,6 +158,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Cohttp: Cohttp_lwt.
          the path, such that no router appears in the path twice.
 *)
     let create_circuit exit relay n =
+        (* assert n>= 1 *)
         (* 1. *)
         let rnd_exit = Random.int (List.length exit) in
         let circuit = Circuits.create (List.nth exit rnd_exit) in
@@ -169,7 +172,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Cohttp: Cohttp_lwt.
                 let circuit = Circuits.add_relay circuit (List.nth relay rnd_relay) in
                 add_relays (x-1) circuit
         in
-        Lwt.return (add_relays n circuit)
+        Lwt.return (add_relays (n-1) circuit)
 
 (*
       3. If not already connected to the first router in the chain,
@@ -186,22 +189,107 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Cohttp: Cohttp_lwt.
       6. For each subsequent onion router R (R_2 through R_N), extend
          the circuit to R.
 *)
-    let connect_circuit stack circuit =
+    let escape_data buf = String.escaped (Cstruct.to_string buf)
+
+    let write tls buf =
+        TLS.write tls buf >>= function
+        | Ok () -> Log.debug(fun f -> f "send %s" (escape_data buf)); Lwt.return (Ok())
+        | Error e -> Log.debug(fun f -> f "err: %a" TLS.pp_write_error e); Lwt.return (Error e)
+
+    let read tls =
+        TLS.read tls >>= function
+        | Ok (`Data buf) -> Log.debug(fun f -> f "recv %s" (escape_data buf)); Lwt.return (Ok())
+        | Ok `Eof -> Log.debug(fun f -> f "eof"); Lwt.return (Ok())
+        | Error e -> Log.debug(fun f -> f "err: %a" TLS.pp_error e); Lwt.return (Error e)
+
+    let uint8_to_cs i =
+        let cs = Cstruct.create 1 in
+        Cstruct.set_uint8 cs 0 i;
+        cs
+
+    let uint16_to_cs i =
+        let cs = Cstruct.create 2 in
+        Cstruct.BE.set_uint16 cs 0 i;
+        cs
+
+    let uint32_to_cs i =
+        let cs = Cstruct.create 4 in
+        Cstruct.BE.set_uint32 cs 0 i;
+        cs
+
+    (* 5.1 CREATE and CREATED cells *)
+    let create2 hdata =
+        let len = Cstruct.length hdata in
+        let payload = Cstruct.concat [
+            uint16_to_cs 0 ;   (* HTYPE *)
+            uint16_to_cs len ; (* HLEN *)
+            hdata              (* HDATA *)
+        ] in
+        Log.debug (fun m -> m "create2 payload:");
+        Cstruct.hexdump payload ;
+        payload
+
+    let created2 hdata =
+        let len = Cstruct.length hdata in
+        Cstruct.concat [
+            uint16_to_cs len ; (* HLEN *)
+            hdata              (* HDATA *)
+        ]
+
+    (* 5.1 CREATE and CREATED cells *)
+    let extend2 lspec hdata =
+        let rec lspec_to_cstruct lspec acc =
+            match lspec with
+            | [] -> acc
+            | lspec::t ->
+                Cstruct.concat [lspec ; lspec_to_cstruct t acc]
+        in
+        let _len = Cstruct.length hdata in
+        Cstruct.concat [
+            uint8_to_cs (List.length lspec) ;
+            lspec_to_cstruct lspec hdata
+        ]
+
+    let connect_circuit stack kv circuit =
         (* 3. *)
         let first_node = List.hd circuit.relay in
-        Tcp.create_connection (Stack.tcpv4 stack) (first_node.ip_addr, first_node.port) >|= function
+        X509.authenticator kv >>= fun authenticator ->
+        let conf = Tls.Config.client ~authenticator () in
+        TCP.create_connection (Stack.tcpv4 stack) (first_node.ip_addr, first_node.port) >|= function
         | Error e ->
-            Log.err (fun m -> m "error %a while establishing tcp connection to %a:%d"
-                    Tcp.pp_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
-            Error ()
-        | Ok _flow ->
+            Log.err (fun m -> m "error %a while establishing TCP connection to %a:%d"
+                    TCP.pp_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
+            Lwt.return_unit
+        | Ok flow ->
             Log.debug (fun m -> m "established new outgoing TCP connection to %a:%d"
                       Ipaddr.V4.pp first_node.ip_addr first_node.port);
+            TLS.client_of_flow conf flow >>= function
+            | Error e ->
+                Log.err (fun m -> m "error %a while establishing TLS connection to %a:%d"
+                        TLS.pp_write_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
+                Lwt.return_unit
+            | Ok tls ->
+                Log.debug (fun m -> m "TLS connexion success");
         (* 4. *)
-            let _circID = Random.bits in
-        (* assert circID <> 0 and was never used with the first node *)
+                let circID = uint32_to_cs (Random.int32 1024l) in
+                (* assert circID <> 0 and was never used with the first node *)
+                write tls (create2 circID) >>= fun _ ->
         (* 5. *)
+                read tls >>= function
+                | Error e ->
+                    Log.err (fun m -> m "error %a while receiving CREATED packet from %a:%d"
+                            TLS.pp_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
+                    Lwt.return_unit
+                | Ok _buf ->
         (* 6. *)
-            Ok ()
-
+                    let rec extend_circuit nodes =
+                        match nodes with
+                        | [] -> (* TODO: extend to exit *) Lwt.return_unit
+                        | _n::t ->
+                            (* extend to the next node *)
+                            write tls (extend2 [] (Cstruct.create 0)) >>= fun _ ->
+                            extend_circuit t
+                    in
+                    extend_circuit (List.tl circuit.relay) >>= fun _ ->
+                    Lwt.return_unit
 end

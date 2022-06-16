@@ -56,6 +56,7 @@ module Exit = struct
                     let last_item = List.hd acc in
                     let line = String.split_on_char ' ' s in
                     let ip = List.nth line 1 in
+                    Log.debug (fun f -> f "Adding/Updating exit node %s (%s/%s)" s (Hex.to_string last_item.id) ip) ;
                     read_entries db (List.cons {id=last_item.id ; ip_addr=List.cons (Ipaddr.V4.of_string_exn ip) last_item.ip_addr} (List.tl acc))
                 else
                     read_entries db acc
@@ -74,7 +75,7 @@ module Exit = struct
             | [] -> ()
         in
         match db with
-        | e::db -> Log.debug (fun f -> f "Exit Node %s : " (Hex.to_string e.id)); print_ip (e.ip_addr) ; print_list db
+        | e::db -> Log.info (fun f -> f "Exit Node %s : " (Hex.to_string e.id)); print_ip (e.ip_addr) ; print_list db
         | [] -> ()
 
 end
@@ -141,7 +142,8 @@ module Relay = struct
                     let id = List.nth line 1 in
                     let ip = List.nth line 2 in
                     let port = List.nth line 3 in
-                    read_entries db (List.cons {id=Hex.of_string id ; ip_addr=Ipaddr.V4.of_string_exn ip ; port=String.get_uint16_be port 0} acc)
+                    Log.debug (fun f -> f "Adding relay node %s (%s/%s:%s)" s id ip port) ;
+                    read_entries db (List.cons {id=Hex.of_string id ; ip_addr=Ipaddr.V4.of_string_exn ip ; port=int_of_string port} acc)
                 end else
                     read_entries db acc
             | [] -> acc
@@ -153,7 +155,7 @@ module Relay = struct
 
     let rec print_list db =
         match db with
-        | e::db -> Log.debug (fun f -> f "Relay Node %s : %s" (Hex.to_string e.id) (to_string e)) ; print_list db
+        | e::db -> Log.info (fun f -> f "Relay Node %s : %s" (Hex.to_string e.id) (to_string e)) ; print_list db
         | [] -> ()
 
 end

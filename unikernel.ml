@@ -16,14 +16,14 @@
 
 open Lwt.Infix
 
-module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Stack: Tcpip.Stack.V4) (Cohttp: Cohttp_lwt.S.Client) = struct
+module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.PCLOCK) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (Cohttp: Cohttp_lwt.S.Client) = struct
 
-    module Tor = Tor.Make(Rand)(Stack)(Cohttp)
+    module Tor = Tor.Make(Rand)(Stack)(KV)(Clock)(Cohttp)
 
     let log_src = Logs.Src.create "torrefacteur" ~doc:"Tor test & dev"
     module Log = (val Logs.src_log log_src : Logs.LOG)
 
-    let start _random _time stack ctx =
+    let start _random _time _pclock stack kv ctx =
         Random.self_init () ;
 
 (*        Tor.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->*)
@@ -41,7 +41,7 @@ module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Stack: Tcpip.Stack.V4
         Tor.create_circuit exit_nodes relay_nodes 10 >>= fun circuit ->
         (* as a current testing code create circuit outputs a string with all ips in the circuit... *)
         Log.info (fun f -> f "The circuit is %s" (Circuits.to_string circuit));
-        Tor.connect_circuit stack circuit >>= fun _ ->
+        Tor.connect_circuit stack kv circuit >>= fun _ ->
 
         Lwt.return_unit
 end

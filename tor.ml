@@ -29,6 +29,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
     module TCP = Stack.TCPV4
     module TLS = Tls_mirage.Make(TCP)
     module NSS = Ca_certs_nss.Make (Clock)
+    module X509 = Tls_mirage.X509 (KV)(Clock)
 
     (*
         Currently https leads to Fatal error: exception Failure("connect: authentication failure: invalid certificate chain")
@@ -251,6 +252,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
         ]
 
     let connect_circuit stack _kv circuit =
+        (* TODO: if circuit.relay is empty, only use the exit node... *)
         (* 3. *)
         let first_node = List.hd circuit.relay in
         TCP.create_connection (Stack.tcpv4 stack) (first_node.ip_addr, first_node.port) >>= function
@@ -259,10 +261,14 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
                     TCP.pp_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
             Lwt.return_unit
         | Ok flow ->
-            Log.debug (fun m -> m "established new outgoing TCP connection to %a:%d"
+            Log.info (fun m -> m "established new outgoing TCP connection to %a:%d"
                       Ipaddr.V4.pp first_node.ip_addr first_node.port);
             let authenticator = Result.get_ok (NSS.authenticator () )in
-            let conf = Tls.Config.client ~authenticator () in
+            (*X509.authenticator _kv >>= fun authenticator ->*)
+            let peer_name =
+              Result.to_option (Result.bind (Domain_name.of_string first_node.id) Domain_name.host)
+            in
+            let conf = Tls.Config.client ?peer_name ~authenticator () in
 
             TLS.client_of_flow conf flow >>= function
             | Error e ->
@@ -270,7 +276,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
                         TLS.pp_write_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
                 Lwt.return_unit
             | Ok tls ->
-                Log.debug (fun m -> m "TLS connexion success");
+                Log.info (fun m -> m "established TLS connection to %a:%d"
+                      Ipaddr.V4.pp first_node.ip_addr first_node.port);
         (* 4. *)
                 let circID = uint32_to_cs (Random.int32 1024l) in
                 (* assert circID <> 0 and was never used with the first node *)
@@ -283,6 +290,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
                     Lwt.return_unit
                 | Ok _buf ->
         (* 6. *)
+                Log.info (fun m -> m "read from TLS connection %a:%d"
+                      Ipaddr.V4.pp first_node.ip_addr first_node.port);
                     let rec extend_circuit nodes =
                         match nodes with
                         | [] -> (* TODO: extend to exit *) Lwt.return_unit

@@ -83,7 +83,7 @@ end
 module Relay = struct
 
     type t = {
-        id : Hex.t ;
+        id : String.t ;
         ip_addr : Ipaddr.V4.t ;
         port : Int.t ;
     }
@@ -143,7 +143,7 @@ module Relay = struct
                     let ip = List.nth line 2 in
                     let port = List.nth line 3 in
                     Log.debug (fun f -> f "Adding relay node %s (%s/%s:%s)" s id ip port) ;
-                    read_entries db (List.cons {id=Hex.of_string id ; ip_addr=Ipaddr.V4.of_string_exn ip ; port=int_of_string port} acc)
+                    read_entries db (List.cons {id=id ; ip_addr=Ipaddr.V4.of_string_exn ip ; port=int_of_string port} acc)
                 end else
                     read_entries db acc
             | [] -> acc
@@ -155,7 +155,7 @@ module Relay = struct
 
     let rec print_list db =
         match db with
-        | e::db -> Log.info (fun f -> f "Relay Node %s : %s" (Hex.to_string e.id) (to_string e)) ; print_list db
+        | e::db -> Log.info (fun f -> f "Relay Node %s : %s" (e.id) (to_string e)) ; print_list db
         | [] -> ()
 
 end

@@ -31,7 +31,7 @@ let add_relay circuit relay =
 let to_string circuit =
     let rec relay_list relay acc =
         match relay with
-        | r::t -> String.concat "/" [(relay_list t acc) ; (Nodes.Relay.to_string r)]
+        | r::t -> String.concat "/" [(Nodes.Relay.to_string r) ; (relay_list t acc)]
         | [] -> acc
     in
     String.concat "/" [relay_list circuit.relay "localhost" ; (Nodes.Exit.to_string circuit.exit)]

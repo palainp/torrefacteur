@@ -34,4 +34,4 @@ let to_string circuit =
         | r::t -> String.concat "/" [(Nodes.Relay.to_string r) ; (relay_list t acc)]
         | [] -> acc
     in
-    String.concat "/" [relay_list circuit.relay "localhost" ; (Nodes.Exit.to_string circuit.exit)]
+    String.concat "/" ["localhost" ; relay_list circuit.relay "" ; (Nodes.Exit.to_string circuit.exit)]

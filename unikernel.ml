@@ -24,7 +24,10 @@ module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.P
     module Log = (val Logs.src_log log_src : Logs.LOG)
 
     let start _random _time _pclock stack kv ctx =
+        (* When testing, it can be useful to always have the same randomized nodes selection.
+           Remove this later...
         Random.self_init () ;
+        *)
 
 (*        Tor.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->*)
         Tor.get_file ctx "./site/index/index.json" >>= fun str ->

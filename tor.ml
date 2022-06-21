@@ -28,7 +28,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
 
     module TCP = Stack.TCPV4
     module TLS = Tls_mirage.Make(TCP)
-    module X509 = Tls_mirage.X509 (KV)(Clock)
+    module NSS = Ca_certs_nss.Make (Clock)
 
     (*
         Currently https leads to Fatal error: exception Failure("connect: authentication failure: invalid certificate chain")
@@ -250,12 +250,10 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
             lspec_to_cstruct lspec hdata
         ]
 
-    let connect_circuit stack kv circuit =
+    let connect_circuit stack _kv circuit =
         (* 3. *)
         let first_node = List.hd circuit.relay in
-        X509.authenticator kv >>= fun authenticator ->
-        let conf = Tls.Config.client ~authenticator () in
-        TCP.create_connection (Stack.tcpv4 stack) (first_node.ip_addr, first_node.port) >|= function
+        TCP.create_connection (Stack.tcpv4 stack) (first_node.ip_addr, first_node.port) >>= function
         | Error e ->
             Log.err (fun m -> m "error %a while establishing TCP connection to %a:%d"
                     TCP.pp_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
@@ -263,6 +261,9 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
         | Ok flow ->
             Log.debug (fun m -> m "established new outgoing TCP connection to %a:%d"
                       Ipaddr.V4.pp first_node.ip_addr first_node.port);
+            let authenticator = Result.get_ok (NSS.authenticator () )in
+            let conf = Tls.Config.client ~authenticator () in
+
             TLS.client_of_flow conf flow >>= function
             | Error e ->
                 Log.err (fun m -> m "error %a while establishing TLS connection to %a:%d"

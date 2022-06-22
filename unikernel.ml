@@ -29,8 +29,7 @@ module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.P
         Random.self_init () ;
         *)
 
-(*        Tor.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->*)
-        Tor.get_file ctx "./site/index/index.json" >>= fun str ->
+        Tor.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->
         let cfg_json = Ezjsonm.from_string str in
 
         Tor.get_last_exit_list ctx cfg_json >>= fun exit_nodes ->

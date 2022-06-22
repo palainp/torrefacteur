@@ -31,10 +31,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
     module NSS = Ca_certs_nss.Make (Clock)
     module X509 = Tls_mirage.X509 (KV)(Clock)
 
-    (*
-        Currently https leads to Fatal error: exception Failure("connect: authentication failure: invalid certificate chain")
-        For the time being, I use unix direct file access...
-
     let get_file ctx fname =
         Log.debug (fun f -> f "try to open: %s" fname );
         let http_fetch ctx link =
@@ -45,46 +41,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
           body
         in
         http_fetch ctx fname
-    *)
-    let get_file _ctx fname =
-        Log.debug (fun f -> f "try to open: %s" fname );
-        let unix_fetch path =
-          Lwt.catch (fun () ->
-            Lwt_unix.openfile path [Lwt_unix.O_RDONLY] 0 >>= fun fd ->
-            Lwt.finalize (fun () ->
-              Lwt_unix.LargeFile.fstat fd >>= fun stat ->
-              if stat.Lwt_unix.LargeFile.st_kind = Lwt_unix.S_REG then begin
-                Lwt_unix.LargeFile.fstat fd >>= fun stat ->
-                let size64 = stat.Lwt_unix.LargeFile.st_size in
-                if size64 > Int64.of_int Sys.max_string_length then begin
-                  Lwt.return (Error "file too large to process")
-                end else begin
-                  let size = Int64.to_int size64 in
-                  let buffer = Bytes.create size in
-                  Lwt_unix.read fd buffer 0 size >|= fun read_bytes ->
-                  if read_bytes = size then begin
-                    Ok (Bytes.unsafe_to_string buffer)
-                  end else begin
-                    Error (Printf.sprintf "could not read %d bytes" size)
-                  end
-                end
-              end else begin
-                Lwt.return (Error (Printf.sprintf "file %s not found" path))
-              end)
-            (fun () -> Lwt_unix.close fd))
-          (function
-            | Unix.Unix_error (Unix.ENOENT, _, _) ->
-              Lwt.return (Error (Printf.sprintf "file %s not found" path))
-            | Unix.Unix_error (_, _, _) ->
-              Lwt.return (Error "storage error")
-            | e -> Lwt.fail e)
-        in
-        unix_fetch fname >>= function
-        | Error e ->
-            Log.debug (fun f -> f "%s: %s" fname e);
-            Lwt.return ""
-        | Ok str ->
-            Lwt.return str
 
     let get_in_array json pos =
         let list x = match x with
@@ -113,9 +69,9 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
         get_last_exit_list_info cfg >>= fun last_list_info ->
         Log.debug (fun f -> f "last exit-lists info list: %s" (Ezjsonm.value_to_string last_list_info) );
         let list_name = Ezjsonm.value_to_string (Ezjsonm.find last_list_info ["path"]) in
-        (* TODO: remove heading and trailing quote in list_name *)
-    (*  let path = String.concat "/" ["https://collector.torproject.org/index/"; path; list_name] in *)
-        let path = String.concat "/" ["./site"; "exit-lists"; list_name] in
+        (* TODO: remove heading and trailing quote in list_name (in a better way) *)
+        let list_name = String.sub list_name 1 ((String.length list_name)-2) in
+        let path = String.concat "/" ["https://collector.torproject.org/recent/"; "exit-lists"; list_name] in 
         get_file ctx path >>= fun nodes ->
         (* TODO: check for the sha256 against the result in last_list_info *)
         Lwt.return nodes
@@ -135,9 +91,9 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
         get_last_relay_list_info cfg >>= fun last_list_info ->
         Log.debug (fun f -> f "last server-descriptors info list: %s" (Ezjsonm.value_to_string last_list_info) );
         let list_name = Ezjsonm.value_to_string (Ezjsonm.find last_list_info ["path"]) in
-        (* TODO: remove heading and trailing quote in list_name *)
-    (*  let path = String.concat "/" ["https://collector.torproject.org/index/"; path; list_name] in *)
-        let path = String.concat "/" ["./site"; "relay-descriptors"; "server-descriptors"; list_name] in
+        (* TODO: remove heading and trailing quote in list_name (in a better way) *)
+        let list_name = String.sub list_name 1 ((String.length list_name)-2) in
+        let path = String.concat "/" ["https://collector.torproject.org/recent/"; "relay-descriptors"; "server-descriptors"; list_name] in 
         get_file ctx path >>= fun nodes ->
         (* TODO: check for the sha256 against the result in last_list_info *)
         Lwt.return nodes
@@ -161,6 +117,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
     let create_circuit exit relay n =
         (* assert n>= 1 *)
         (* 1. *)
+        Log.info (fun f->f "len = %d" (List.length exit));
         let rnd_exit = Random.int (List.length exit) in
         let circuit = Circuits.create (List.nth exit rnd_exit) in
         (* 2. *)

@@ -183,8 +183,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
             uint16_to_cs len ; (* HLEN *)
             hdata              (* HDATA *)
         ] in
-        Log.debug (fun m -> m "create2 payload:");
-        Cstruct.hexdump payload ;
         payload
 
     let created2 hdata =
@@ -220,12 +218,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
         | Ok flow ->
             Log.info (fun m -> m "established new outgoing TCP connection to %a:%d"
                       Ipaddr.V4.pp first_node.ip_addr first_node.port);
-            let authenticator = Result.get_ok (NSS.authenticator () )in
-            (*X509.authenticator _kv >>= fun authenticator ->*)
-            let peer_name =
-              Result.to_option (Result.bind (Domain_name.of_string first_node.id) Domain_name.host)
-            in
-            let conf = Tls.Config.client ?peer_name ~authenticator () in
+            let conf = Tls.Config.client ~authenticator:(fun ?ip:_ ~host:_ _ -> Ok None) () in
 
             TLS.client_of_flow conf flow >>= function
             | Error e ->

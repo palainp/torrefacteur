@@ -40,7 +40,7 @@ module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.P
         let relay_nodes = Nodes.Relay.parse_db relay_nodes in
         (*Nodes.Relay.print_list relay_nodes ;*)
 
-        Tor.create_circuit exit_nodes relay_nodes 10 >>= fun circuit ->
+        Tor.create_circuit exit_nodes relay_nodes 3 >>= fun circuit ->
         (* as a current testing code create circuit outputs a string with all ips in the circuit... *)
         Log.info (fun f -> f "The circuit is %s" (Circuits.to_string circuit));
         Tor.connect_circuit stack kv circuit >>= fun _ ->

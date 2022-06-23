@@ -151,14 +151,14 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
 
     let write tls buf =
         TLS.write tls buf >>= function
-        | Ok () -> Log.debug(fun f -> f "send %s" (escape_data buf)); Lwt.return (Ok())
-        | Error e -> Log.debug(fun f -> f "err: %a" TLS.pp_write_error e); Lwt.return (Error e)
+        | Ok () -> Log.info(fun f -> f "send %s" (escape_data buf)); Lwt.return (Ok())
+        | Error e -> Log.info(fun f -> f "send err: %a" TLS.pp_write_error e); Lwt.return (Error e)
 
     let read tls =
         TLS.read tls >>= function
-        | Ok (`Data buf) -> Log.debug(fun f -> f "recv %s" (escape_data buf)); Lwt.return (Ok())
-        | Ok `Eof -> Log.debug(fun f -> f "eof"); Lwt.return (Ok())
-        | Error e -> Log.debug(fun f -> f "err: %a" TLS.pp_error e); Lwt.return (Error e)
+        | Ok (`Data buf) -> Log.info(fun f -> f "recv %s" (escape_data buf)); Lwt.return (Ok())
+        | Ok `Eof -> Log.info(fun f -> f "recv eof"); Lwt.return (Ok())
+        | Error e -> Log.info(fun f -> f "recv err: %a" TLS.pp_error e); Lwt.return (Error e)
 
     let uint8_to_cs i =
         let cs = Cstruct.create 1 in
@@ -175,25 +175,43 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
         Cstruct.BE.set_uint32 cs 0 i;
         cs
 
+    (* 4.1 VERSION cells *)
+    let version circID =
+        let v = Cstruct.concat [
+            uint8_to_cs 1;
+        ] in
+        let len = Cstruct.length v in
+        let payload = Cstruct.concat [
+            circID ;
+            uint8_to_cs (Tor_constants.tor_command_to_uint8 VERSIONS) ;
+            uint16_to_cs len ;
+            v ;
+        ] in
+        payload
+
     (* 5.1 CREATE and CREATED cells *)
-    let create2 hdata =
+    let create2 cirdID hdata =
         let len = Cstruct.length hdata in
         let payload = Cstruct.concat [
+            cirdID ;
+            uint8_to_cs (Tor_constants.tor_command_to_uint8 CREATE2) ;
             uint16_to_cs 0 ;   (* HTYPE *)
             uint16_to_cs len ; (* HLEN *)
             hdata              (* HDATA *)
         ] in
         payload
 
-    let created2 hdata =
+    let created2 cirdID hdata =
         let len = Cstruct.length hdata in
         Cstruct.concat [
+            cirdID ;
+            uint8_to_cs (Tor_constants.tor_command_to_uint8 CREATED2) ;
             uint16_to_cs len ; (* HLEN *)
             hdata              (* HDATA *)
         ]
 
     (* 5.1 CREATE and CREATED cells *)
-    let extend2 lspec hdata =
+    let extend2 cirdID lspec hdata =
         let rec lspec_to_cstruct lspec acc =
             match lspec with
             | [] -> acc
@@ -202,6 +220,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
         in
         let _len = Cstruct.length hdata in
         Cstruct.concat [
+            cirdID ;
+            uint8_to_cs (Tor_constants.tor_command_to_uint8 CREATED2) ;
             uint8_to_cs (List.length lspec) ;
             lspec_to_cstruct lspec hdata
         ]
@@ -229,9 +249,10 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
                 Log.info (fun m -> m "established TLS connection to %a:%d"
                       Ipaddr.V4.pp first_node.ip_addr first_node.port);
         (* 4. *)
-                let circID = uint32_to_cs (Random.int32 1024l) in
+                let circID = uint16_to_cs (1024) in
                 (* assert circID <> 0 and was never used with the first node *)
-                write tls (create2 circID) >>= fun _ ->
+                write tls (version circID) >>= fun _ ->
+                Log.info (fun m -> m "version sended");
         (* 5. *)
                 read tls >>= function
                 | Error e ->
@@ -240,14 +261,16 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
                     Lwt.return_unit
                 | Ok _buf ->
         (* 6. *)
-                Log.info (fun m -> m "read from TLS connection %a:%d"
+                    Log.info (fun m -> m "read from TLS connection %a:%d"
                       Ipaddr.V4.pp first_node.ip_addr first_node.port);
+                    write tls (create2 circID (Cstruct.create 0)) >>= fun _ ->
+                    Log.info (fun m -> m "create2 NULL sended");
                     let rec extend_circuit nodes =
                         match nodes with
                         | [] -> (* TODO: extend to exit *) Lwt.return_unit
                         | _n::t ->
                             (* extend to the next node *)
-                            write tls (extend2 [] (Cstruct.create 0)) >>= fun _ ->
+                            write tls (extend2 circID [] (Cstruct.create 0)) >>= fun _ ->
                             extend_circuit t
                     in
                     extend_circuit (List.tl circuit.relay) >>= fun _ ->

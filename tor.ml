@@ -22,7 +22,7 @@ open Tor_constants
    The following should be compatible with:
    https://gitlab.torproject.org/tpo/core/torspec
 *)
-module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (Clock: Mirage_clock.PCLOCK) (Cohttp: Cohttp_lwt.S.Client) = struct
+module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock.PCLOCK) (Cohttp: Cohttp_lwt.S.Client) = struct
 
     let log_src = Logs.Src.create "tor-protocol" ~doc:"Tor protocol"
     module Log = (val Logs.src_log log_src : Logs.LOG)
@@ -30,7 +30,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
     module TCP = Stack.TCPV4
     module TLS = Tls_mirage.Make(TCP)
     module NSS = Ca_certs_nss.Make (Clock)
-    module X509 = Tls_mirage.X509 (KV)(Clock)
 
     let get_file ctx fname =
         Log.debug (fun f -> f "try to open: %s" fname );
@@ -129,30 +128,44 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
         Cstruct.BE.set_uint32 cs 0 i;
         cs
 
+    (* VERSIONS is a variable len packet => add the len size right after the command field *)
     let version circID =
         let v = Cstruct.concat [
             uint16_to_cs 3;                 (* claims to be a version 3 client only *)
         ] in
         let len = Cstruct.length v in
-        let payload = Cstruct.concat [
+        Cstruct.concat [
             circID ;
             uint8_to_cs (tor_command_to_uint8 VERSIONS) ;
             uint16_to_cs len ;
             v ;
-        ] in
-        payload
+        ]
 
-    (* 5.1 CREATE and CREATED cells *)
-    let create2 cirdID hdata =
+    (* CREATE2 is a fixed len packet => do not add the len size after the command field *)
+    let create2 cirdID fingerprint key_serv ec_pub =
+        let id = Cstruct.of_string (Hex.to_string fingerprint) in
+        let h = Cstruct.of_string key_serv in (* FIXME: Here we do not use the pubkey (32B) but the string... *)
+        let g = Mirage_crypto_ec.Ed25519.pub_to_cstruct ec_pub in
+        let hdata = Cstruct.concat [
+            id ;
+            h ;
+            g ;
+        ] in
         let len = Cstruct.length hdata in
         let payload = Cstruct.concat [
-            cirdID ;
-            uint8_to_cs (tor_command_to_uint8 CREATE2) ;
-            uint16_to_cs 0 ;   (* HTYPE *)
+            uint16_to_cs 2 ;   (* HTYPE 0==legacy TAP, 1==reserved, 2==ntor*)
             uint16_to_cs len ; (* HLEN *)
             hdata              (* HDATA *)
         ] in
-        payload
+        Log.info(fun f -> f "id len:%d" (Cstruct.length id));
+        Log.info(fun f -> f "h len:%d" (Cstruct.length h));
+        Log.info(fun f -> f "g len:%d" (Cstruct.length g));
+        Cstruct.concat [
+            cirdID ;
+            uint8_to_cs (tor_command_to_uint8 CREATE2) ;
+            payload ;
+            Cstruct.create (509-(Cstruct.length payload)) (* PAYLOAD_LEN==509 *)
+        ]
 
     let created2 cirdID hdata =
         let len = Cstruct.length hdata in
@@ -163,7 +176,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
             hdata              (* HDATA *)
         ]
 
-    (* 5.1 CREATE and CREATED cells *)
     let extend2 cirdID lspec hdata =
         let rec lspec_to_cstruct lspec acc =
             match lspec with
@@ -174,7 +186,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
         let _len = Cstruct.length hdata in
         Cstruct.concat [
             cirdID ;
-            uint8_to_cs (tor_command_to_uint8 CREATED2) ;
+            uint8_to_cs (tor_command_to_uint8 CREATE2) ;
             uint8_to_cs (List.length lspec) ;
             lspec_to_cstruct lspec hdata
         ]
@@ -224,6 +236,10 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
             let typ = tor_command_of_uint8 (Cstruct.get_uint8 payload 2) in
             let payload = Cstruct.shift payload 3 in
             match typ with
+
+            (* Variable sized commands always start with the length (2 bytes):
+               let len = Cstruct.BE.get_uint16 payload 0 in
+            *)
 
             | VERSIONS ->
                 let len = Cstruct.BE.get_uint16 payload 0 in
@@ -318,6 +334,18 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
             Lwt.return_unit
 
 
+    let client_handshake tls circID fingerprint ntor_onion_key g =
+        let (_ec_priv, ec_pub) = Mirage_crypto_ec.Ed25519.generate ~g () in
+        write tls (create2 circID fingerprint ntor_onion_key ec_pub) >>= fun _ ->
+        read tls >|= function
+        | Error e ->
+            Log.err (fun m -> m "error %a while receiving packets" TLS.pp_error e ) ;
+            Lwt.return_unit
+        | Ok data ->
+            Cstruct.hexdump data ;
+            Log.info (fun m -> m "got a reply" );
+            Lwt.return_unit
+
 (*
       3. If not already connected to the first router in the chain,
          open a new connection to that router.
@@ -333,7 +361,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
       6. For each subsequent onion router R (R_2 through R_N), extend
          the circuit to R.
 *)
-    let connect_circuit stack _kv circuit =
+    let connect_circuit stack circuit g =
         (* TODO: if circuit.relay is empty, only use the exit node... *)
         (* 3. *)
         let first_node = List.hd circuit.relay in
@@ -359,6 +387,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (
                 let circID = uint16_to_cs (1024) in
                 (* assert circID <> 0 and was never used with the first node *)
                 negotiate_version tls circID >>= fun _ ->
+                client_handshake tls circID first_node.fingerprint first_node.ntor_onion_key g >>= fun _ ->
         (* 5. *)
         (* 6. *)
                 Lwt.return_unit

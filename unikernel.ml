@@ -16,18 +16,19 @@
 
 open Lwt.Infix
 
-module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.PCLOCK) (Stack: Tcpip.Stack.V4) (KV: Mirage_kv.RO) (Cohttp: Cohttp_lwt.S.Client) = struct
+module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.PCLOCK) (Stack: Tcpip.Stack.V4) (Cohttp: Cohttp_lwt.S.Client) = struct
 
-    module Tor = Tor.Make(Rand)(Stack)(KV)(Clock)(Cohttp)
+    module Tor = Tor.Make(Rand)(Stack)(Clock)(Cohttp)
 
     let log_src = Logs.Src.create "torrefacteur" ~doc:"Tor test & dev"
     module Log = (val Logs.src_log log_src : Logs.LOG)
 
-    let start _random _time _pclock stack kv ctx =
+    let start _random _time _pclock stack ctx =
         (* When testing, it can be useful to always have the same randomized nodes selection.
            Remove this later...
         Random.self_init () ;
         *)
+        let g = Mirage_crypto_rng.(create ~seed:(Cstruct.of_string "111213") (module Fortuna)) in
 
         Tor.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->
         let cfg_json = Ezjsonm.from_string str in
@@ -43,7 +44,7 @@ module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.P
         Tor.create_circuit exit_nodes relay_nodes 3 >>= fun circuit ->
         (* as a current testing code create circuit outputs a string with all ips in the circuit... *)
         Log.info (fun f -> f "The circuit is %s" (Circuits.to_string circuit));
-        Tor.connect_circuit stack kv circuit >>= fun _ ->
+        Tor.connect_circuit stack circuit g >>= fun _ ->
 
         Lwt.return_unit
 end

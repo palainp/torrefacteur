@@ -57,7 +57,7 @@ module Exit = struct
                     let line = String.split_on_char ' ' s in
                     let ip = List.nth line 1 in
                     Log.debug (fun f -> f "Adding/Updating exit node %s (%s/%s)" s (Hex.to_string last_item.id) ip) ;
-                    read_entries db (List.cons {id=last_item.id ; ip_addr=List.cons (Ipaddr.V4.of_string_exn ip) last_item.ip_addr} (List.tl acc))
+                    read_entries db (List.cons {last_item with ip_addr=List.cons (Ipaddr.V4.of_string_exn ip) last_item.ip_addr} (List.tl acc))
                 else
                     read_entries db acc
             | [] -> acc
@@ -86,6 +86,8 @@ module Relay = struct
         id : String.t ;
         ip_addr : Ipaddr.V4.t ;
         port : Int.t ;
+        identity_digest : String.t ;
+        ntor_onion_key : String.t ;
     }
 
     (* Format is:
@@ -143,7 +145,13 @@ module Relay = struct
                     let ip = List.nth line 2 in
                     let port = List.nth line 3 in
                     Log.debug (fun f -> f "Adding relay node %s (%s/%s:%s)" s id ip port) ;
-                    read_entries db (List.cons {id=id ; ip_addr=Ipaddr.V4.of_string_exn ip ; port=int_of_string port} acc)
+                    read_entries db (List.cons {id=id ; ip_addr=Ipaddr.V4.of_string_exn ip ; port=int_of_string port ; identity_digest = "" ; ntor_onion_key=""} acc)
+                end else if ( String.starts_with ~prefix:"ntor-onion-key " s ) then begin
+                    let last_item = List.hd acc in
+                    let line = String.split_on_char ' ' s in
+                    let key = List.nth line 1 in
+                    Log.debug (fun f -> f "Adding relay node info ntor-onion-key %s (%s)" key last_item.id) ;
+                    read_entries db (List.cons {last_item with ntor_onion_key=key} (List.tl acc))
                 end else
                     read_entries db acc
             | [] -> acc

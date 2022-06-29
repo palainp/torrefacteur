@@ -157,8 +157,13 @@ module Relay = struct
                     let last_item = List.hd acc in
                     let line = String.split_on_char ' ' s in
                     let key = List.nth line 1 in
+                    let key_decoded = begin match Base64.decode ~pad:false key with
+                      | Error (`Msg _) ->
+                        ""
+                      | Ok k -> k
+                    end in
                     Log.info (fun f -> f "Adding relay node info ntor-onion-key %s (%s)" key last_item.id) ;
-                    read_entries db (List.cons {last_item with ntor_onion_key=key} (List.tl acc))
+                    read_entries db (List.cons {last_item with ntor_onion_key=key_decoded} (List.tl acc))
                 end else
                     read_entries db acc
             | [] -> acc

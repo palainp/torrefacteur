@@ -157,9 +157,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             uint16_to_cs len ; (* HLEN *)
             hdata              (* HDATA *)
         ] in
-        Log.info(fun f -> f "id len:%d" (Cstruct.length id));
-        Log.info(fun f -> f "h len:%d" (Cstruct.length h));
-        Log.info(fun f -> f "g len:%d" (Cstruct.length g));
         Cstruct.concat [
             cirdID ;
             uint8_to_cs (tor_command_to_uint8 CREATE2) ;

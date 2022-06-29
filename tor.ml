@@ -161,7 +161,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
         ]
 
     (* CREATE2 is a fixed len packet => do not add the len size after the command field *)
-    let create2 cirdID fingerprint key_serv ec_pub =
+    let create2 circID fingerprint key_serv ec_pub =
         let id = Cstruct.of_string (Hex.to_string fingerprint) in
         let h = Cstruct.of_string key_serv in (* FIXME: Here we do not use the pubkey (32B) but the string... *)
         let g = Mirage_crypto_ec.Ed25519.pub_to_cstruct ec_pub in
@@ -177,36 +177,23 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             hdata              (* HDATA *)
         ] in
         Cstruct.concat [
-            cirdID ;
+            circID ;
             uint8_to_cs (tor_command_to_uint8 CREATE2) ;
             payload ;
             Cstruct.create (509-(Cstruct.length payload)) (* PAYLOAD_LEN==509 *)
         ]
 
-    let created2 cirdID hdata =
-        let len = Cstruct.length hdata in
+    let extend2 circID _node =
         Cstruct.concat [
-            cirdID ;
-            uint8_to_cs (tor_command_to_uint8 CREATED2) ;
-            uint16_to_cs len ; (* HLEN *)
-            hdata              (* HDATA *)
+            circID ;
+            uint8_to_cs (tor_relay_command_to_uint8 RELAY_EXTEND2) ;
         ]
 
-    let extend2 cirdID lspec hdata =
-        let rec lspec_to_cstruct lspec acc =
-            match lspec with
-            | [] -> acc
-            | lspec::t ->
-                Cstruct.concat [lspec ; lspec_to_cstruct t acc]
-        in
-        let _len = Cstruct.length hdata in
+    let extend2_exit_node circID _node =
         Cstruct.concat [
-            cirdID ;
-            uint8_to_cs (tor_command_to_uint8 CREATE2) ;
-            uint8_to_cs (List.length lspec) ;
-            lspec_to_cstruct lspec hdata
+            circID ;
+            uint8_to_cs (tor_relay_command_to_uint8 RELAY_EXTEND2) ;
         ]
-
 
 (*
 5.3. Creating circuits
@@ -346,7 +333,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
    identity, an AUTH_CHALLENGE cell (4.3) that the initiator must include
    as part of its answer if it chooses to authenticate, and a NETINFO
    cell (4.5). *)
-    let negotiate_version tls circID =
+    let send_version tls circID =
         write tls (version circID) >>= fun _ ->
         read tls >|= function
         | Error e ->
@@ -356,8 +343,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             deal_pack tls circID data >>= fun _ ->
             Lwt.return_unit
 
-
-    let client_handshake tls circID fingerprint ntor_onion_key g =
+    let connect_first_node tls circID fingerprint ntor_onion_key g =
         let (_ec_priv, ec_pub) = Mirage_crypto_ec.Ed25519.generate ~g () in
         write tls (create2 circID fingerprint ntor_onion_key ec_pub) >>= fun _ ->
         read tls >|= function
@@ -405,12 +391,20 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             | Ok tls ->
                 Log.info (fun m -> m "established TLS connection to %a:%d"
                       Ipaddr.V4.pp first_node.ip_addr first_node.port);
-        (* 4. *)
+        (* 4 & 5. *)
                 let circID = uint16_to_cs (1024) in
                 (* assert circID <> 0 and was never used with the first node *)
-                negotiate_version tls circID >>= fun _ ->
-                client_handshake tls circID first_node.fingerprint first_node.ntor_onion_key g >>= fun _ ->
-        (* 5. *)
+                send_version tls circID >>= fun _ ->
+                connect_first_node tls circID first_node.fingerprint first_node.ntor_onion_key g >>= fun _ ->
         (* 6. *)
+                let rec extend2_next_nodes tls circID relays =
+                    match relays with
+                    | [] -> Lwt.return_unit
+                    | h::t ->
+                        write tls (extend2 circID h) >>= fun _ ->
+                        extend2_next_nodes tls circID t
+                in
+                extend2_next_nodes tls circID (List.tl circuit.relay) >>= fun _ ->
+                write tls (extend2_exit_node circID circuit.exit) >>= fun _ ->
                 Lwt.return_unit
 end

@@ -141,6 +141,25 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             v ;
         ]
 
+    (* NETINFO is a fixed len packet => do not add the len size right after the command field *)
+    let netinfo circID my_addr router_addr =
+        let payload = Cstruct.concat [
+        	uint32_to_cs 0l ; (* client should use 0 for timestamp to avoid fingerprinting *)
+            uint8_to_cs 4 ; (* ATYPE = IPv4 *)
+            uint8_to_cs 4 ; (* ALEN = 4 for IPv4 *)
+        	router_addr ;
+            uint8_to_cs 1 ; (* NMYADDR = 1 *)
+            uint8_to_cs 4 ; (* ATYPE = IPv4 *)
+            uint8_to_cs 4 ; (* ALEN = 4 for IPv4 *)
+        	my_addr ;
+        ] in
+        Cstruct.concat [
+            circID ;
+            uint8_to_cs (tor_command_to_uint8 NETINFO) ;
+            payload ;
+            Cstruct.create (509-(Cstruct.length payload)) (* PAYLOAD_LEN==509 *)
+        ]
+
     (* CREATE2 is a fixed len packet => do not add the len size after the command field *)
     let create2 cirdID fingerprint key_serv ec_pub =
         let id = Cstruct.of_string (Hex.to_string fingerprint) in
@@ -224,10 +243,10 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
         Lwt.return (add_relays (n-1) circuit)
 
 
-    let parse_pack payload =
-      let rec consume_message payload acc =
+    let deal_pack tls circID payload =
+      let rec proceed_next tls circID payload =
           let len_payload = Cstruct.length payload in
-          if len_payload < 3 then Lwt.return acc
+          if len_payload < 3 then Lwt.return_unit
           else begin
             let _id = Cstruct.sub payload 0 2 in
             let typ = tor_command_of_uint8 (Cstruct.get_uint8 payload 2) in
@@ -241,7 +260,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             | VERSIONS ->
                 let len = Cstruct.BE.get_uint16 payload 0 in
                 let _versions = Cstruct.sub payload 2 len in
-                consume_message (Cstruct.shift payload (2+len)) (List.cons (VERSIONS, Cstruct.sub payload 0 (2+len)) acc)
+                proceed_next tls circID (Cstruct.shift payload (2+len))
 
             | CERTS ->
                 let len = Cstruct.BE.get_uint16 payload 0 in
@@ -258,7 +277,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                 in
                 let _consumed_size = parse_certs ncerts (Cstruct.shift payload 3) 0 in
                 (* assert _consumed_size == len *)
-                consume_message (Cstruct.shift payload (2+len)) (List.cons (CERTS, Cstruct.sub payload 0 (2+len)) acc)
+                proceed_next tls circID (Cstruct.shift payload (2+len))
 
             | AUTH_CHALLENGE ->
                 let len = Cstruct.BE.get_uint16 payload 0 in
@@ -274,7 +293,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                 in
                 let _consumed_size = parse_methods n_methods (Cstruct.shift payload 8) 0 in
                 (* assert _consumed_size == len *)
-                consume_message (Cstruct.shift payload (2+len)) (List.cons (AUTH_CHALLENGE, Cstruct.sub payload 0 (2+len)) acc)
+                proceed_next tls circID (Cstruct.shift payload (2+len))
 
             | NETINFO ->
                 let ip_len_of_cstruct v =
@@ -284,31 +303,39 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                         | _ -> Log.err (fun m -> m "Unexpected value when reading the IP addr size"); 0
                 in
                 let _timestamp = Cstruct.BE.get_uint32 payload 0 in
-                let _other_atype = Cstruct.get_uint8 payload 4 in
-                let other_alen = ip_len_of_cstruct (Cstruct.get_uint8 payload 5) in
-                let _other_aval = Cstruct.sub payload 6 other_alen in
+                (* in the tor-spec, those are refered as other_* but as we received this packet, this is us *)
+                let _my_atype = Cstruct.get_uint8 payload 4 in
+                let my_alen = ip_len_of_cstruct (Cstruct.get_uint8 payload 5) in
+                let my_aval = Cstruct.sub payload 6 my_alen in
 
-                let rec parse_my_addr n payload consumed_size =
+                let rec parse_my_addr n payload consumed_size addr =
                     match n with
                     | 0 ->
-                        consumed_size
+                        (consumed_size, addr)
                     | n ->
-                        let _my_atype = Cstruct.get_uint8 payload 0 in
-                        let my_alen = ip_len_of_cstruct (Cstruct.get_uint8 payload 1) in
-                        let _my_aval = Cstruct.sub payload (2+other_alen) my_alen in
-                        parse_my_addr (n-1) (Cstruct.shift payload (2+my_alen)) (consumed_size+2+my_alen)
+                        let _router_atype = Cstruct.get_uint8 payload 0 in
+                        let router_alen = ip_len_of_cstruct (Cstruct.get_uint8 payload 1) in
+                        let router_aval = Cstruct.sub payload (2+router_alen) my_alen in
+                        parse_my_addr (n-1) (Cstruct.shift payload (2+router_alen)) (consumed_size+2+router_alen) (Cstruct.concat [addr ; router_aval])
                 in
-                let n_my_addr = Cstruct.get_uint8 payload (6+other_alen) in
-                let consumed_size = parse_my_addr n_my_addr (Cstruct.shift payload (6+other_alen+1)) 0 in
+                let n_router_addr = Cstruct.get_uint8 payload (6+my_alen) in
+                let (consumed_size, router_aval) = parse_my_addr n_router_addr (Cstruct.shift payload (6+my_alen+1)) 0 Cstruct.empty in
 
-                consume_message (Cstruct.shift payload (6+other_alen+1+consumed_size)) (List.cons (AUTH_CHALLENGE, Cstruct.sub payload 0 (6+other_alen+1+consumed_size)) acc)
+                (* for testing purpose, suppose we onlly have 1 IPv4 at the begining in router_aval... *)
+                write tls (netinfo circID my_aval (Cstruct.sub router_aval 0 4)) >>= fun _ ->
+
+                proceed_next tls circID (Cstruct.shift payload (6+my_alen+1+consumed_size))
+
+            | CREATED2 ->
+                Log.info (fun m -> m "CREATED2 received...");
+                Lwt.return_unit
 
             | _ ->
                 Cstruct.hexdump payload ;
-                Lwt.return acc
+                Lwt.return_unit
           end
       in
-      consume_message payload []
+      proceed_next tls circID payload
 
 
     (* 4. Negotiating and initializing connections
@@ -326,8 +353,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             Log.err (fun m -> m "error %a while receiving packets" TLS.pp_error e ) ;
             Lwt.return_unit
         | Ok data ->
-            parse_pack data >>= fun packets ->
-            Log.info (fun m -> m "got %d packets" (List.length packets));
+            deal_pack tls circID data >>= fun _ ->
             Lwt.return_unit
 
 
@@ -339,8 +365,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             Log.err (fun m -> m "error %a while receiving packets" TLS.pp_error e ) ;
             Lwt.return_unit
         | Ok data ->
-            Cstruct.hexdump data ;
-            Log.info (fun m -> m "got a reply" );
+            deal_pack tls circID data >>= fun _ ->
             Lwt.return_unit
 
 (*

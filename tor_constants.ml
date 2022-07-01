@@ -140,6 +140,22 @@
     | NOSUCHSERVICE -> 12
     | UNK_TOR_ERROR -> 255
 
+  let tor_error_to_string = function
+    | NONE -> "NONE"
+    | PROTOCOL -> "PROTOCOL"
+    | INTERNAL -> "INTERNAL"
+    | REQUESTED -> "REQUESTED"
+    | HIBERNATING -> "HIBERNATING"
+    | RESOURCELIMIT -> "RESOURCELIMIT"
+    | CONNECTFAILED -> "CONNECTFAILED"
+    | OR_IDENTITY -> "OR_IDENTITY"
+    | CHANNEL_CLOSED -> "CHANNEL_CLOSED"
+    | FINISHED -> "FINISHED"
+    | TIMEOUT -> "TIMEOUT"
+    | DESTROYED -> "DESTROYED"
+    | NOSUCHSERVICE -> "NOSUCHSERVICE"
+    | UNK_TOR_ERROR -> "UNK_TOR_ERROR"
+
   let uint8_to_tor_error = function
     |  0 -> NONE
     |  1 -> PROTOCOL

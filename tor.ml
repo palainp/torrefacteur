@@ -128,18 +128,29 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
         Cstruct.BE.set_uint32 cs 0 i;
         cs
 
+    let payload_len = 509
+
+    let create_packet circID command ?padding payload =
+        let pad = match padding with
+        | None | Some true ->
+            let len = Cstruct.length payload in
+            Cstruct.create (payload_len-len)
+        | Some false -> Cstruct.empty
+        in
+        Cstruct.concat [
+            circID ;
+            uint8_to_cs (tor_command_to_uint8 command) ;
+            payload ;
+            pad ;
+        ]
+
     (* VERSIONS is a variable len packet => add the len size right after the command field *)
     let version circID =
         let v = Cstruct.concat [
-            uint16_to_cs 3;                 (* claims to be a version 3 client only *)
+            uint16_to_cs 2 ;                 (* length of the packet, specific to the versions packet *)
+            uint16_to_cs 3 ;                 (* claims to be a version 3 client only *)
         ] in
-        let len = Cstruct.length v in
-        Cstruct.concat [
-            circID ;
-            uint8_to_cs (tor_command_to_uint8 VERSIONS) ;
-            uint16_to_cs len ;
-            v ;
-        ]
+        create_packet circID VERSIONS v ~padding:false
 
     (* NETINFO is a fixed len packet => do not add the len size right after the command field *)
     let netinfo circID my_addr router_addr =
@@ -153,12 +164,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             uint8_to_cs 4 ; (* ALEN = 4 for IPv4 *)
         	my_addr ;
         ] in
-        Cstruct.concat [
-            circID ;
-            uint8_to_cs (tor_command_to_uint8 NETINFO) ;
-            payload ;
-            Cstruct.create (509-(Cstruct.length payload)) (* PAYLOAD_LEN==509 *)
-        ]
+        create_packet circID NETINFO payload ~padding:true
 
     (* CREATE2 is a fixed len packet => do not add the len size after the command field *)
     let create2 circID fingerprint key_serv ec_pub =
@@ -176,12 +182,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             uint16_to_cs len ; (* HLEN *)
             hdata ;            (* HDATA *)
         ] in
-        Cstruct.concat [
-            circID ;
-            uint8_to_cs (tor_command_to_uint8 CREATE2) ;
-            payload ;
-            Cstruct.create (509-(Cstruct.length payload)) (* PAYLOAD_LEN==509 *)
-        ]
+        create_packet circID CREATE2 payload ~padding:true
 
     (* 5.1.2. EXTEND and EXTENDED cells *)
     let extend2 : Cstruct.t -> Hex.t -> string -> Mirage_crypto_ec.Ed25519.pub -> Nodes.Relay.t -> Cstruct.t =
@@ -205,34 +206,25 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             g ;
         ] in
         let len = Cstruct.length hdata in
-        let payload = Cstruct.concat [
+        let extend2_payload = Cstruct.concat [
             spec ;
             uint16_to_cs 2 ;    (* HTYPE 0==legacy TAP, 1==reserved, 2==ntor*)
             uint16_to_cs len ;  (* HLEN *)
             hdata ;             (* HDATA *)
         ] in
 
-        let len = Cstruct.length payload in
-        Cstruct.concat [
-            circID ;
-            uint8_to_cs (tor_command_to_uint8 RELAY) ;
-
+        let len = Cstruct.length extend2_payload in
+        let payload = Cstruct.concat [
             (* 6.1. Relay cells *)
             uint8_to_cs (tor_relay_command_to_uint8 RELAY_EXTEND2) ;
             uint16_to_cs 0 ; (* 0 for unencrypted *)
-            uint16_to_cs 100 ; (* streamID *)
+            uint16_to_cs 1024 ; (* streamID *)
             uint32_to_cs 0l ; (* digest *)
             uint16_to_cs len ;
 
-            payload ;
-            Cstruct.create (509-11-len) (* PAYLOAD_LEN==509 *)
-        ]
-
-    let extend2_exit_node circID _node =
-        Cstruct.concat [
-            circID ;
-            uint8_to_cs (tor_relay_command_to_uint8 RELAY_EXTEND2) ;
-        ]
+            extend2_payload ;
+        ] in
+        create_packet circID RELAY payload ~padding:true
 
 (*
 5.3. Creating circuits
@@ -284,11 +276,13 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             *)
 
             | VERSIONS ->
+                Log.info (fun m -> m "VERSIONS received...");
                 let len = Cstruct.BE.get_uint16 payload 0 in
                 let _versions = Cstruct.sub payload 2 len in
                 proceed_next tls circID (Cstruct.shift payload (2+len))
 
             | CERTS ->
+                Log.info (fun m -> m "CERTS received...");
                 let len = Cstruct.BE.get_uint16 payload 0 in
                 let ncerts = Cstruct.get_uint8 payload 2 in
                 let rec parse_certs n payload consumed_size =
@@ -306,6 +300,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                 proceed_next tls circID (Cstruct.shift payload (2+len))
 
             | AUTH_CHALLENGE ->
+                Log.info (fun m -> m "AUTH_CHALLENGE received...");
                 let len = Cstruct.BE.get_uint16 payload 0 in
                 let _challenge = Cstruct.sub payload 2 32 in
                 let n_methods = Cstruct.BE.get_uint16 payload 34 in
@@ -322,6 +317,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                 proceed_next tls circID (Cstruct.shift payload (2+len))
 
             | NETINFO ->
+                Log.info (fun m -> m "NETINFO received...");
                 let ip_len_of_cstruct v =
                     match v with
                         | 4 -> 4
@@ -368,6 +364,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                 proceed_next tls circID (Cstruct.shift payload 509)
 
             | _ ->
+                Log.info (fun m -> m "Received UNK packet...");
                 Cstruct.hexdump payload ;
                 Lwt.return_unit
           end

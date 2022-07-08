@@ -269,7 +269,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                 (* for testing purpose, suppose we onlly have 1 IPv4 at the begining in router_aval... *)
                 write tls (netinfo circID my_aval (Cstruct.sub router_aval 0 4)) >>= fun _ ->
 
-                proceed_next tls circID (Cstruct.shift payload (6+my_alen+1+consumed_size))
+                proceed_next tls circID (Cstruct.shift payload (Int.max payload_len (6+my_alen+1+consumed_size)))
 
             | CREATED2 ->
                 Log.info (fun m -> m "CREATED2 received...");

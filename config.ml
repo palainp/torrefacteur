@@ -8,6 +8,7 @@ let main =
       package "duration" ;
       package "ethernet";
       package ~min:"6.0.0" "mirage-protocols";
+      package ~min:"5.1.1" "conduit";
       package "cohttp-mirage";
       package "ezjsonm" ;
       package "ca-certs-nss" ;

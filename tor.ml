@@ -22,7 +22,7 @@ open Tor_constants
    The following should be compatible with:
    https://gitlab.torproject.org/tpo/core/torspec
 *)
-module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock.PCLOCK) (Cohttp: Cohttp_lwt.S.Client) = struct
+module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock.PCLOCK) = struct
 
     let log_src = Logs.Src.create "tor-protocol" ~doc:"Tor protocol"
     module Log = (val Logs.src_log log_src : Logs.LOG)
@@ -30,75 +30,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
     module TCP = Stack.TCPV4
     module TLS = Tls_mirage.Make(TCP)
     module NSS = Ca_certs_nss.Make (Clock)
-
-    let get_file ctx fname =
-        Log.debug (fun f -> f "try to open: %s" fname );
-        let http_fetch ctx link =
-          Log.info (fun f -> f "fetching %s" link) ;
-          let uri = Uri.of_string link in
-          Cohttp.get ~ctx uri >>= fun (_, body) ->
-          Cohttp_lwt.Body.to_string body >|= fun body ->
-          body
-        in
-        http_fetch ctx fname
-
-    let get_in_array json pos =
-        let list x = match x with
-            | `A x -> x
-            | _ -> []
-        in
-        List.nth (list json) pos
-
-    let get_last_in_array json =
-        let list x = match x with
-            | `A x -> x
-            | _ -> []
-        in
-        List.hd (List.rev (list json))
-
-    let get_last_exit_list ctx cfg =
-        let get_last_exit_list_info cfg =
-            let get s t = Ezjsonm.find t [s] in
-            let recent = get_in_array (get "directories" cfg ) 1 in
-            (* assert path=="recent" *)
-            let exit_lists = get_in_array (get "directories" recent ) 4 in
-            (* assert path=="exit-lists" *)
-            let last_list = get "files" exit_lists in
-            Lwt.return (get_last_in_array last_list)
-        in
-        get_last_exit_list_info cfg >>= fun last_list_info ->
-        Log.debug (fun f -> f "last exit-lists info list: %s" (Ezjsonm.value_to_string last_list_info) );
-        let list_name = Ezjsonm.value_to_string (Ezjsonm.find last_list_info ["path"]) in
-        (* TODO: remove heading and trailing quote in list_name (in a better way) *)
-        let list_name = String.sub list_name 1 ((String.length list_name)-2) in
-        let path = String.concat "/" ["https://collector.torproject.org/recent/"; "exit-lists"; list_name] in 
-        get_file ctx path >>= fun nodes ->
-        (* TODO: check for the sha256 against the result in last_list_info *)
-        Lwt.return nodes
-
-    let get_last_relay_list ctx cfg =
-        let get_last_relay_list_info cfg =
-            let get s t = Ezjsonm.find t [s] in
-            let recent = get_in_array (get "directories" cfg ) 1 in
-            (* assert path=="recent" *)
-            let relay_desc_lists = get_in_array (get "directories" recent ) 6 in
-            (* assert path=="relay-descriptors" *)
-            let server_desc_lists = get_in_array (get "directories" relay_desc_lists ) 5 in
-            (* assert path=="server-descriptors" *)
-            let last_list = get "files" server_desc_lists in
-            Lwt.return (get_last_in_array last_list)
-        in
-        get_last_relay_list_info cfg >>= fun last_list_info ->
-        Log.debug (fun f -> f "last server-descriptors info list: %s" (Ezjsonm.value_to_string last_list_info) );
-        let list_name = Ezjsonm.value_to_string (Ezjsonm.find last_list_info ["path"]) in
-        (* TODO: remove heading and trailing quote in list_name (in a better way) *)
-        let list_name = String.sub list_name 1 ((String.length list_name)-2) in
-        let path = String.concat "/" ["https://collector.torproject.org/recent/"; "relay-descriptors"; "server-descriptors"; list_name] in 
-        get_file ctx path >>= fun nodes ->
-        (* TODO: check for the sha256 against the result in last_list_info *)
-        Lwt.return nodes
-
-
 
     let escape_data buf = String.escaped (Cstruct.to_string buf)
 
@@ -166,8 +97,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
         ] in
         create_packet circID NETINFO payload ~padding:true
 
-    (* CREATE2 is a fixed len packet => do not add the len size after the command field *)
-    let create2 circID fingerprint key_serv ec_pub =
+    let handshake_client fingerprint key_serv ec_pub =
         let id = Cstruct.of_string (Hex.to_string fingerprint) in
         let h = Cstruct.of_string key_serv in
         let g = Mirage_crypto_ec.Ed25519.pub_to_cstruct ec_pub in
@@ -177,51 +107,44 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             g ;
         ] in
         let len = Cstruct.length hdata in
-        let payload = Cstruct.concat [
+        Cstruct.concat [
             uint16_to_cs 2 ;   (* HTYPE 0==legacy TAP, 1==reserved, 2==ntor*)
             uint16_to_cs len ; (* HLEN *)
             hdata ;            (* HDATA *)
-        ] in
+        ]
+
+    (* CREATE2 is a fixed len packet => do not add the len size after the command field *)
+    let create2 circID fingerprint key_serv ec_pub =
+        let payload = handshake_client fingerprint key_serv ec_pub in
         create_packet circID CREATE2 payload ~padding:true
 
     (* 5.1.2. EXTEND and EXTENDED cells *)
     let extend2 : Cstruct.t -> Hex.t -> string -> Mirage_crypto_ec.Ed25519.pub -> Nodes.Relay.t -> Cstruct.t =
     fun circID fingerprint key_serv ec_pub next_relay ->
         let spec = Cstruct.concat [
-            uint8_to_cs 1 ;                   (* NSPEC *)
+            uint8_to_cs 2 ;                   (* NSPEC *)
             uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
             uint8_to_cs 6 ;
             uint32_to_cs (Ipaddr.V4.to_int32 next_relay.ip_addr) ;
             uint16_to_cs (next_relay.port) ;
-            (*uint8_to_cs 3 ;                   (* [03] Ed25519 identity *)
+            uint8_to_cs 3 ;                   (* [03] Ed25519 identity *)
             uint8_to_cs 32 ;
-            Cstruct.of_string next_relay.ntor_onion_key ;*)
+            Cstruct.of_string next_relay.ntor_onion_key ;
         ] in
-        let id = Cstruct.of_string (Hex.to_string fingerprint) in
-        let h = Cstruct.of_string key_serv in
-        let g = Mirage_crypto_ec.Ed25519.pub_to_cstruct ec_pub in
-        let hdata = Cstruct.concat [
-            id ;
-            h ;
-            g ;
-        ] in
-        let len = Cstruct.length hdata in
+        let handshake = handshake_client fingerprint key_serv ec_pub in
         let extend2_payload = Cstruct.concat [
             spec ;
-            uint16_to_cs 2 ;    (* HTYPE 0==legacy TAP, 1==reserved, 2==ntor*)
-            uint16_to_cs len ;  (* HLEN *)
-            hdata ;             (* HDATA *)
+            handshake ;
         ] in
 
         let len = Cstruct.length extend2_payload in
         let payload = Cstruct.concat [
             (* 6.1. Relay cells *)
             uint8_to_cs (tor_relay_command_to_uint8 RELAY_EXTEND2) ;
-            uint16_to_cs 0 ; (* 0 for unencrypted *)
+            uint16_to_cs 0 ;    (* 0 for unencrypted *)
             uint16_to_cs 1024 ; (* streamID *)
-            uint32_to_cs 0l ; (* digest *)
+            uint32_to_cs 0l ;   (* digest *)
             uint16_to_cs len ;
-
             extend2_payload ;
         ] in
         create_packet circID RELAY payload ~padding:true
@@ -352,16 +275,16 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                 Log.info (fun m -> m "CREATED2 received...");
                 let _server_pubkey = Cstruct.sub payload 0 32 in
                 let _auth = Cstruct.sub payload 32 32 in
-                proceed_next tls circID (Cstruct.shift payload 509)
+                proceed_next tls circID (Cstruct.shift payload payload_len)
 
             | RELAY ->
                 Log.info (fun m -> m "RELAY received...");
-                proceed_next tls circID (Cstruct.shift payload 509)
+                proceed_next tls circID (Cstruct.shift payload payload_len)
 
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
                 Log.info (fun m -> m "DESTROY received: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
-                proceed_next tls circID (Cstruct.shift payload 509)
+                proceed_next tls circID (Cstruct.shift payload payload_len)
 
             | _ ->
                 Log.info (fun m -> m "Received UNK packet...");

@@ -183,7 +183,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
         Lwt.return (add_relays (n-1) circuit)
 
 
-    let deal_pack tls circID payload =
+    let negotiate_version tls circID payload =
       let rec proceed_next tls circID payload =
           let len_payload = Cstruct.length payload in
           if len_payload < 3 then Lwt.return_unit
@@ -270,6 +270,28 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
 
                 proceed_next tls circID (Cstruct.shift payload (Int.max payload_len (6+my_alen+1+consumed_size)))
 
+            | DESTROY ->
+                let reason = Cstruct.get_uint8 payload 0 in
+                Log.info (fun m -> m "DESTROY received: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
+                proceed_next tls circID (Cstruct.shift payload payload_len)
+
+            | _ ->
+                Log.info (fun m -> m "Received UNK packet...");
+                Cstruct.hexdump payload ;
+                Lwt.return_unit
+          end
+      in
+      proceed_next tls circID payload
+
+    let extract_keys tls circID payload =
+      let rec proceed_next tls circID payload =
+          let len_payload = Cstruct.length payload in
+          if len_payload < 3 then Lwt.return_unit
+          else begin
+            let _id = Cstruct.sub payload 0 2 in
+            let typ = tor_command_of_uint8 (Cstruct.get_uint8 payload 2) in
+            let payload = Cstruct.shift payload 3 in
+            match typ with
             | CREATED2 ->
                 Log.info (fun m -> m "CREATED2 received...");
                 let _server_pubkey = Cstruct.sub payload 0 32 in
@@ -300,11 +322,7 @@ then:
                 let Kb = HMAC_SHA256(Kf | "ntor-curve25519-sha256-1:key_expand" | INT8(4) , KEY_SEED)
                 let KH =
 *)
-                proceed_next tls circID (Cstruct.shift payload payload_len)
-
-            | RELAY ->
-                Log.info (fun m -> m "RELAY received...");
-                proceed_next tls circID (Cstruct.shift payload payload_len)
+                Lwt.return_unit
 
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
@@ -335,7 +353,7 @@ then:
             Log.err (fun m -> m "error %a while receiving packets" TLS.pp_error e ) ;
             Lwt.return_unit
         | Ok data ->
-            deal_pack tls circID data
+            negotiate_version tls circID data
 
     let connect_first_node tls circID fingerprint ntor_onion_key ec_pub =
         write tls (create2 circID fingerprint ntor_onion_key ec_pub) >>= fun _ ->
@@ -344,7 +362,7 @@ then:
             Log.err (fun m -> m "error %a while receiving packets" TLS.pp_error e ) ;
             Lwt.return_unit
         | Ok data ->
-            deal_pack tls circID data
+            extract_keys tls circID data
 
     let extend2_one_node tls circID fingerprint ntor_onion_key ec_pub extended_circuit =
         Log.info (fun m -> m "extend one more time");
@@ -354,7 +372,7 @@ then:
             Log.err (fun m -> m "error %a while receiving packets" TLS.pp_error e ) ;
             Lwt.return_unit
         | Ok data ->
-            deal_pack tls circID data
+            extract_keys tls circID data
 
 (*
       3. If not already connected to the first router in the chain,

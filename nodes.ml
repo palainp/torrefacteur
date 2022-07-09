@@ -88,6 +88,7 @@ module Relay = struct
         port : Int.t ;
         fingerprint : Hex.t ;
         ntor_onion_key : String.t ;
+        public_onion_key : String.t ;
     }
 
     (* Format is:
@@ -136,6 +137,17 @@ module Relay = struct
 
     let parse_db db =
         let db = String.split_on_char '\n' db in
+        let rec key_of_banner db acc =
+            match db with
+            | s::db ->
+                if ( String.equal "-----BEGIN RSA PUBLIC KEY-----" s ) then (* a new key banner *)
+                    key_of_banner db acc
+                else if ( String.equal "-----END RSA PUBLIC KEY-----" s ) then (* the end of key banner *)
+                    (db, acc)
+                else
+                    key_of_banner db (String.concat "" [acc ; s])
+            | [] -> ([], "") (* this is an unterminated key... *)
+        in
         let rec read_entries db acc =
             match db with
             | s::db ->
@@ -145,7 +157,7 @@ module Relay = struct
                     let ip = List.nth line 2 in
                     let port = List.nth line 3 in
                     Log.debug (fun f -> f "Adding relay node %s (%s/%s:%s)" s id ip port) ;
-                    read_entries db (List.cons {id=id ; ip_addr=Ipaddr.V4.of_string_exn ip ; port=int_of_string port ; fingerprint=Hex.of_string "" ; ntor_onion_key=""} acc)
+                    read_entries db (List.cons {id=id ; ip_addr=Ipaddr.V4.of_string_exn ip ; port=int_of_string port ; fingerprint=Hex.of_string "" ; ntor_onion_key="" ; public_onion_key=""} acc)
                 end else if ( String.starts_with ~prefix:"fingerprint " s ) then begin
                     let last_item = List.hd acc in
                     let line = String.split_on_char ' ' s in
@@ -164,6 +176,11 @@ module Relay = struct
                     end in
                     Log.debug (fun f -> f "Adding relay node info ntor-onion-key %s (%s)" key last_item.id) ;
                     read_entries db (List.cons {last_item with ntor_onion_key=key_decoded} (List.tl acc))
+                end else if ( String.equal "onion-key" s ) then begin
+                    let last_item = List.hd acc in
+                    let (db, pubkey) = key_of_banner db "" in
+                    Log.debug (fun f -> f "Adding relay node info public-onion-key %s (%s)" pubkey last_item.id) ;
+                    read_entries db (List.cons {last_item with public_onion_key=pubkey} (List.tl acc))
                 end else
                     read_entries db acc
             | [] -> acc

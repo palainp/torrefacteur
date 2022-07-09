@@ -136,7 +136,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             spec ;
             handshake ;
         ] in
-
         let len = Cstruct.length extend2_payload in
         let payload = Cstruct.concat [
             (* 6.1. Relay cells *)
@@ -275,6 +274,32 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                 Log.info (fun m -> m "CREATED2 received...");
                 let _server_pubkey = Cstruct.sub payload 0 32 in
                 let _auth = Cstruct.sub payload 32 32 in
+
+                let protoid   = "ntor-curve25519-sha256-1" in
+                let _t_mac     = String.concat "" [protoid ; ":mac"] in
+                let _t_key     = String.concat "" [protoid ; ":key_extract"] in
+                let _t_verify  = String.concat "" [protoid ; ":verify"] in
+                let _m_expand  = String.concat "" [protoid ; ":key_expand"] in
+(*
+Various notes on what we have to do here:
+
+                let secret_input = EXP(server_pubkey,client_priv_key) | EXP(ntor_onion_key,client_priv_key) | ID | ntor_onion_key | client_pub_key | server_pub_key | "ntor-curve25519-sha256-1"
+                let KEY_SEED = HMAC_SHA256(secret_input, "ntor-curve25519-sha256-1:key_extract")
+                let verify = HMAC_SHA256(secret_input, "ntor-curve25519-sha256-1:verify")
+                let auth_input = verify | ID | ntor_onion_key | server_pub_key | client_pub_key | "ntor-curve25519-sha256-1" | "Server"
+
+     assert auth = HMAC_SHA256(auth_input, "ntor-curve25519-sha256-1:mac")
+
+then:
+   In RFC5869's vocabulary, this is HKDF-SHA256 with info == "ntor-curve25519-sha256-1:key_expand",
+   salt == "ntor-curve25519-sha256-1:key_extract", and IKM == secret_input.
+
+                let Df = HMAC_SHA256("ntor-curve25519-sha256-1:key_expand" | INT8(1) , KEY_SEED)
+                let Db = HMAC_SHA256(Df | "ntor-curve25519-sha256-1:key_expand" | INT8(2) , KEY_SEED)
+                let Kf = HMAC_SHA256(Db | "ntor-curve25519-sha256-1:key_expand" | INT8(3) , KEY_SEED)
+                let Kb = HMAC_SHA256(Kf | "ntor-curve25519-sha256-1:key_expand" | INT8(4) , KEY_SEED)
+                let KH =
+*)
                 proceed_next tls circID (Cstruct.shift payload payload_len)
 
             | RELAY ->

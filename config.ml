@@ -11,7 +11,6 @@ let main =
       package ~min:"5.1.1" "conduit";
       package "cohttp-mirage";
       package "ezjsonm" ;
-      package "ca-certs-nss" ;
     ]
     "Unikernel.Main" (random @-> time @-> pclock @-> stackv4 @-> http_client @-> job)
 

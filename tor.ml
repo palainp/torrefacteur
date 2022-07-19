@@ -72,6 +72,15 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
         | Ok `Eof -> Log.info(fun f -> f "recv eof"); Lwt.return (Ok Cstruct.empty)
         | Error e -> Log.info(fun f -> f "recv err: %a" TLS.pp_error e); Lwt.return (Error e)
 
+    let send_cell tls cell cb =
+        write tls cell >>= fun _ ->
+        read tls >>= function
+        | Error e ->
+            Log.err (fun m -> m "error %a while receiving packets" TLS.pp_error e ) ;
+            assert false
+        | Ok data ->
+            cb data
+
     let payload_len = 509
     let hash_len = 20
     let key_len = 32
@@ -400,22 +409,6 @@ then:
       in
       proceed_next payload fingerprint client_pub_key client_priv_key ntor_onion_key
 
-    (* 4. Negotiating and initializing connections
-       When the in-protocol handshake is used, the initiator sends a
-   VERSIONS cell to indicate that it will not be renegotiating.  The
-   responder sends a VERSIONS cell, a CERTS cell (4.2 below) to give the
-   initiator the certificates it needs to learn the responder's
-   identity, an AUTH_CHALLENGE cell (4.3) that the initiator must include
-   as part of its answer if it chooses to authenticate, and a NETINFO
-   cell (4.5). *)
-    let send_packet tls packet cb =
-        write tls packet >>= fun _ ->
-        read tls >>= function
-        | Error e ->
-            Log.err (fun m -> m "error %a while receiving packets" TLS.pp_error e ) ;
-            assert false
-        | Ok data ->
-            cb data
 (*
       3. If not already connected to the first router in the chain,
          open a new connection to that router.
@@ -457,10 +450,12 @@ then:
                 let (ec_priv, ec_pub) = Mirage_crypto_ec.Ed25519.generate ~g () in
                 let circID = 1024 in
                 (* assert circID <> 0 and was never used with the first node *)
-                let version_pkt = version circID in
-                send_packet tls version_pkt (negotiate_version tls circID) >>= fun _ ->
+
+                send_cell tls (version circID) (negotiate_version tls circID) >>= fun _ ->
+
                 let create2_pkt = create2 circID first_node.fingerprint first_node.ntor_onion_key ec_pub in
-                send_packet tls create2_pkt (extract_keys first_node.fingerprint first_node.ntor_onion_key ec_pub ec_priv) >>= fun cs ->
+                send_cell tls create2_pkt (extract_keys first_node.fingerprint first_node.ntor_onion_key ec_pub ec_priv) >>= fun cs ->
+
                 let df = Cstruct.sub cs 0 hash_len in
                 let kf = Cstruct.sub cs (2*hash_len) key_len in
                 match Mirage_crypto_ec.Ed25519.priv_of_cstruct kf with
@@ -474,7 +469,7 @@ Log.info (fun m -> m "will extend nodes");
                         Lwt.return kf_list
                     | h::t -> (* extend to h and rec on t *)
                         let onion_skin = extend2 circID kf_list last_df ec_pub h in
-                        send_packet tls onion_skin (extract_keys h.fingerprint h.ntor_onion_key ec_pub ec_priv) >>= fun cs ->
+                        send_cell tls onion_skin (extract_keys h.fingerprint h.ntor_onion_key ec_pub ec_priv) >>= fun cs ->
                         let df = Cstruct.sub cs 0 hash_len in
                         let kf = Cstruct.sub cs (2*hash_len) key_len in
                         match Mirage_crypto_ec.Ed25519.priv_of_cstruct kf with

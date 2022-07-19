@@ -31,18 +31,14 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
     module TLS = Tls_mirage.Make(TCP)
     module NSS = Ca_certs_nss.Make (Clock)
 
+    type cell = {
+       circID : Int.t ;
+       command : tor_command ;
+       payload : Cstruct.t ;
+       padding : Cstruct.t ;
+    }
+
     let escape_data buf = String.escaped (Cstruct.to_string buf)
-
-    let write tls buf =
-        TLS.write tls buf >>= function
-        | Ok () -> Log.info(fun f -> f "send %s" (escape_data buf)); Lwt.return (Ok())
-        | Error e -> Log.info(fun f -> f "send err: %a" TLS.pp_write_error e); Lwt.return (Error e)
-
-    let read tls =
-        TLS.read tls >>= function
-        | Ok (`Data buf) -> Log.info(fun f -> f "recv %s" (escape_data buf)); Lwt.return (Ok buf)
-        | Ok `Eof -> Log.info(fun f -> f "recv eof"); Lwt.return (Ok Cstruct.empty)
-        | Error e -> Log.info(fun f -> f "recv err: %a" TLS.pp_error e); Lwt.return (Error e)
 
     let uint8_to_cs i =
         let cs = Cstruct.create 1 in
@@ -59,9 +55,26 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
         Cstruct.BE.set_uint32 cs 0 i;
         cs
 
+    let write tls cell =
+        let buf = Cstruct.concat [
+            uint16_to_cs cell.circID ;
+            uint8_to_cs (tor_command_to_uint8 cell.command) ;
+            cell.payload ;
+            cell.padding ;
+        ] in
+        TLS.write tls buf >>= function
+        | Ok () -> Log.info(fun f -> f "send %s" (escape_data buf)); Lwt.return (Ok())
+        | Error e -> Log.info(fun f -> f "send err: %a" TLS.pp_write_error e); Lwt.return (Error e)
+
+    let read tls =
+        TLS.read tls >>= function
+        | Ok (`Data buf) -> Log.info(fun f -> f "recv %s" (escape_data buf)); Lwt.return (Ok buf)
+        | Ok `Eof -> Log.info(fun f -> f "recv eof"); Lwt.return (Ok Cstruct.empty)
+        | Error e -> Log.info(fun f -> f "recv err: %a" TLS.pp_error e); Lwt.return (Error e)
+
     let payload_len = 509
     let hash_len = 20
-    let key_len = 16
+    let key_len = 32
 
     let random_cs ?(len = Random.int 128) () =
         let cs = Cstruct.create len in
@@ -70,7 +83,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
 
     let create_packet ?(padding = true) ?(random_padding = false) circID command payload =
         (* assert don't allow padding is false and random_padding is true *)
-        let pad = if padding then
+        let padding = if padding then
                 let len = Cstruct.length payload in
                 if random_padding then
                     random_cs ~len:(payload_len-len) ()
@@ -78,12 +91,12 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
                     Cstruct.create (payload_len-len)
             else Cstruct.empty
         in
-        Cstruct.concat [
+        {
             circID ;
-            uint8_to_cs (tor_command_to_uint8 command) ;
+            command ;
             payload ;
-            pad ;
-        ]
+            padding ;
+        }
 
     (* VERSIONS is a variable len packet => add the len size right after the command field *)
     let version circID =
@@ -130,8 +143,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
 
     (* 5.1.2. EXTEND and EXTENDED *
        6.1. Relay cells *)
-    let extend2 : Cstruct.t -> Mirage_crypto_ec.Ed25519.priv list -> Mirage_crypto_ec.Ed25519.pub -> Nodes.Relay.t -> Cstruct.t =
-    fun circID kf_list ec_pub next_relay ->
+    let extend2 : Int.t -> Mirage_crypto_ec.Ed25519.priv list -> Cstruct.t -> Mirage_crypto_ec.Ed25519.pub -> Nodes.Relay.t -> cell =
+    fun circID kf_list last_df ec_pub next_relay ->
         let spec = Cstruct.concat [
             uint8_to_cs 1 ;                   (* NSPEC *)
             uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
@@ -155,11 +168,22 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             extend2_payload ;
             Cstruct.create (payload_len-11-len) ;
         ] in
+        let updated_digest = Cstruct.sub (Cstruct.concat [ last_df ; payload ]) 0 4 in
+        let payload = Cstruct.concat [
+            (* 6.1. Relay cells *)
+            uint8_to_cs (tor_relay_command_to_uint8 RELAY_EXTEND2) ;
+            uint16_to_cs 0 ;
+            uint16_to_cs 1024 ;
+            updated_digest ;
+            uint16_to_cs len ;
+            extend2_payload ;
+            Cstruct.create (payload_len-11-len) ;
+        ] in
         let rec skinify kf_list payload =
             match kf_list with
             | [] -> payload
             | kf::t ->
-                let signed = Mirage_crypto.Cipher_block.Aes.encrypt ~key:kf payload in
+                let signed = Mirage_crypto_ec.Ed25519.sign ~key:kf payload in
                 skinify t signed
         in
         let onion_skin = skinify kf_list payload in
@@ -356,11 +380,11 @@ then:
                 let k = Cstruct.concat [ k1 ; k2 ; k3 ; k4 ] in
 
                 let df = Cstruct.sub k 0 hash_len in
-                let db = Cstruct.sub k hash_len (2*hash_len) in
-                let kf = Cstruct.sub k (2*hash_len) (2*hash_len+key_len) in
-                let kb = Cstruct.sub k (2*hash_len+key_len) (2*hash_len+2*key_len) in
+                let db = Cstruct.sub k (2*hash_len) hash_len in
+                let kf = Cstruct.sub k (2*hash_len) key_len in
+                let kb = Cstruct.sub k (2*hash_len+key_len) key_len in
 
-                let cs = Cstruct.concat [df ; db ;  kf ; kb] in
+                let cs = Cstruct.concat [df ; db ; kf ; kb] in
                 Lwt.return cs
 
             | DESTROY ->
@@ -431,32 +455,34 @@ then:
                       Ipaddr.V4.pp first_node.ip_addr first_node.port);
         (* 4 & 5. *)
                 let (ec_priv, ec_pub) = Mirage_crypto_ec.Ed25519.generate ~g () in
-                let circID = uint16_to_cs (1024) in
+                let circID = 1024 in
                 (* assert circID <> 0 and was never used with the first node *)
                 let version_pkt = version circID in
                 send_packet tls version_pkt (negotiate_version tls circID) >>= fun _ ->
                 let create2_pkt = create2 circID first_node.fingerprint first_node.ntor_onion_key ec_pub in
                 send_packet tls create2_pkt (extract_keys first_node.fingerprint first_node.ntor_onion_key ec_pub ec_priv) >>= fun cs ->
-                let kf = Cstruct.sub cs (2*32) 32 in
+                let df = Cstruct.sub cs 0 hash_len in
+                let kf = Cstruct.sub cs (2*hash_len) key_len in
                 match Mirage_crypto_ec.Ed25519.priv_of_cstruct kf with
                 | Error _ -> assert false
                 | Ok kf ->
         (* 6. *)
 Log.info (fun m -> m "will extend nodes");
-                let rec extend_circuit tls circID ec_pub ec_priv kf_list node_list =
+                let rec extend_circuit tls circID ec_pub ec_priv kf_list last_df node_list =
                     match node_list with
                     | [] -> (* node more nodes to extend *)
                         Lwt.return kf_list
                     | h::t -> (* extend to h and rec on t *)
-                        let onion_skin = extend2 circID kf_list ec_pub h in
+                        let onion_skin = extend2 circID kf_list last_df ec_pub h in
                         send_packet tls onion_skin (extract_keys h.fingerprint h.ntor_onion_key ec_pub ec_priv) >>= fun cs ->
-                        let kf = Cstruct.sub cs (2*32) 32 in
+                        let df = Cstruct.sub cs 0 hash_len in
+                        let kf = Cstruct.sub cs (2*hash_len) key_len in
                         match Mirage_crypto_ec.Ed25519.priv_of_cstruct kf with
                         | Error _ -> assert false
                         | Ok kf ->
-                        extend_circuit tls circID ec_pub ec_priv (List.cons kf kf_list) t
+                        extend_circuit tls circID ec_pub ec_priv (List.cons kf kf_list) df t
                 in
-                extend_circuit tls circID ec_pub ec_priv [kf] (List.tl circuit.relay) >>= fun _kf_list ->
+                extend_circuit tls circID ec_pub ec_priv [kf] df (List.tl circuit.relay) >>= fun _kf_list ->
 Log.info (fun m -> m "then extend to exit");
 
                 Lwt.return_unit

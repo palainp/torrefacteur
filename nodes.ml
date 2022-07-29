@@ -21,7 +21,7 @@ module Exit = struct
 
     type t = {
         id : Hex.t ;
-        ip_addr : Ipaddr.V4.t list ;
+        ip_addr : Ipaddr.t list ;
     }
 
     (* Format is:
@@ -57,7 +57,7 @@ module Exit = struct
                     let line = String.split_on_char ' ' s in
                     let ip = List.nth line 1 in
                     Log.debug (fun f -> f "Adding/Updating exit node %s (%s/%s)" s (Hex.to_string last_item.id) ip) ;
-                    read_entries db (List.cons {last_item with ip_addr=List.cons (Ipaddr.V4.of_string_exn ip) last_item.ip_addr} (List.tl acc))
+                    read_entries db (List.cons {last_item with ip_addr=List.cons (Ipaddr.of_string_exn ip) last_item.ip_addr} (List.tl acc))
                 else
                     read_entries db acc
             | [] -> acc
@@ -66,12 +66,12 @@ module Exit = struct
         read_entries db []
 
     let to_string node =
-        Ipaddr.V4.to_string (List.hd node.ip_addr) (* print the first ip... *)
+        Ipaddr.to_string (List.hd node.ip_addr) (* print the first ip... *)
 
     let rec print_list db =
         let rec print_ip iplist =
             match iplist with
-            | i::t -> Log.debug (fun f -> f "\t %s" (Ipaddr.V4.to_string i)); print_ip t
+            | i::t -> Log.debug (fun f -> f "\t %s" (Ipaddr.to_string i)); print_ip t
             | [] -> ()
         in
         match db with
@@ -84,7 +84,7 @@ module Relay = struct
 
     type t = {
         id : String.t ;
-        ip_addr : Ipaddr.V4.t ;
+        ip_addr : Ipaddr.t ;
         port : Int.t ;
         fingerprint : Hex.t ;
         ntor_onion_key : String.t ;
@@ -157,7 +157,7 @@ module Relay = struct
                     let ip = List.nth line 2 in
                     let port = List.nth line 3 in
                     Log.debug (fun f -> f "Adding relay node %s (%s/%s:%s)" s id ip port) ;
-                    read_entries db (List.cons {id=id ; ip_addr=Ipaddr.V4.of_string_exn ip ; port=int_of_string port ; fingerprint=Hex.of_string "" ; ntor_onion_key="" ; public_onion_key=""} acc)
+                    read_entries db (List.cons {id=id ; ip_addr=Ipaddr.of_string_exn ip ; port=int_of_string port ; fingerprint=Hex.of_string "" ; ntor_onion_key="" ; public_onion_key=""} acc)
                 end else if ( String.starts_with ~prefix:"fingerprint " s ) then begin
                     let last_item = List.hd acc in
                     let line = String.split_on_char ' ' s in
@@ -188,7 +188,7 @@ module Relay = struct
         read_entries db []
 
     let to_string node =
-        String.concat ":" [(Ipaddr.V4.to_string node.ip_addr) ; (Int.to_string node.port)]
+        String.concat ":" [(Ipaddr.to_string node.ip_addr) ; (Int.to_string node.port)]
 
     let rec print_list db =
         match db with

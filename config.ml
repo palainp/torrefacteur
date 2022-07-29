@@ -12,11 +12,10 @@ let main =
       package "cohttp-mirage";
       package "ezjsonm" ;
     ]
-    "Unikernel.Main" (random @-> time @-> pclock @-> stackv4 @-> http_client @-> job)
+    "Unikernel.Main" (random @-> time @-> pclock @-> stackv4v6 @-> http_client @-> job)
 
 let () =
-  let stackv4 = generic_stackv4 default_network in
   let stack = generic_stackv4v6 default_network in
   let res_dns = resolver_dns stack in
   let conduit = conduit_direct ~tls:true stack in
-  register "torrefacteur" [ main $ default_random $ default_time $ default_posix_clock $ stackv4 $ cohttp_client res_dns conduit ]
+  register "torrefacteur" [ main $ default_random $ default_time $ default_posix_clock $ stack $ cohttp_client res_dns conduit ]

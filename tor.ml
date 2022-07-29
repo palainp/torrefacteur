@@ -15,6 +15,7 @@
  *)
 
 open Lwt.Infix
+open Helpers
 open Circuits
 open Tor_constants
 
@@ -22,12 +23,12 @@ open Tor_constants
    The following should be compatible with:
    https://gitlab.torproject.org/tpo/core/torspec
 *)
-module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock.PCLOCK) = struct
+module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clock.PCLOCK) = struct
 
     let log_src = Logs.Src.create "tor-protocol" ~doc:"Tor protocol"
     module Log = (val Logs.src_log log_src : Logs.LOG)
 
-    module TCP = Stack.TCPV4
+    module TCP = Stack.TCP
     module TLS = Tls_mirage.Make(TCP)
     module NSS = Ca_certs_nss.Make (Clock)
 
@@ -37,23 +38,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
        payload : Cstruct.t ;
        padding : Cstruct.t ;
     }
-
-    let escape_data buf = String.escaped (Cstruct.to_string buf)
-
-    let uint8_to_cs i =
-        let cs = Cstruct.create 1 in
-        Cstruct.set_uint8 cs 0 i;
-        cs
-
-    let uint16_to_cs i =
-        let cs = Cstruct.create 2 in
-        Cstruct.BE.set_uint16 cs 0 i;
-        cs
-
-    let uint32_to_cs i =
-        let cs = Cstruct.create 4 in
-        Cstruct.BE.set_uint32 cs 0 i;
-        cs
 
     let write tls cell =
         let buf = Cstruct.concat [
@@ -158,7 +142,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4) (Clock: Mirage_clock
             uint8_to_cs 1 ;                   (* NSPEC *)
             uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
             uint8_to_cs 6 ;
-            uint32_to_cs (Ipaddr.V4.to_int32 next_relay.ip_addr) ;
+            uint32_to_cs (* (Ipaddr.to_int32 next_relay.ip_addr) *) 0l ;
             uint16_to_cs (next_relay.port) ;
         ] in
         let handshake = handshake_client next_relay.fingerprint next_relay.ntor_onion_key ec_pub in
@@ -428,24 +412,24 @@ then:
         (* TODO: if circuit.relay is empty, only use the exit node... *)
         (* 3. *)
         let first_node = List.hd circuit.relay in
-        TCP.create_connection (Stack.tcpv4 stack) (first_node.ip_addr, first_node.port) >>= function
+        TCP.create_connection (Stack.tcp stack) (first_node.ip_addr, first_node.port) >>= function
         | Error e ->
             Log.err (fun m -> m "error %a while establishing TCP connection to %a:%d"
-                    TCP.pp_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
+                    TCP.pp_error e Ipaddr.pp first_node.ip_addr first_node.port) ;
             assert false
         | Ok flow ->
             Log.info (fun m -> m "established new outgoing TCP connection to %a:%d"
-                      Ipaddr.V4.pp first_node.ip_addr first_node.port);
+                      Ipaddr.pp first_node.ip_addr first_node.port);
             let conf = Tls.Config.client ~authenticator:(fun ?ip:_ ~host:_ _ -> Ok None) () in
 
             TLS.client_of_flow conf flow >>= function
             | Error e ->
                 Log.err (fun m -> m "error %a while establishing TLS connection to %a:%d"
-                        TLS.pp_write_error e Ipaddr.V4.pp first_node.ip_addr first_node.port) ;
+                        TLS.pp_write_error e Ipaddr.pp first_node.ip_addr first_node.port) ;
                 assert false
             | Ok tls ->
                 Log.info (fun m -> m "established TLS connection to %a:%d"
-                      Ipaddr.V4.pp first_node.ip_addr first_node.port);
+                      Ipaddr.pp first_node.ip_addr first_node.port);
         (* 4 & 5. *)
                 let (ec_priv, ec_pub) = Mirage_crypto_ec.Ed25519.generate ~g () in
                 let circID = 1024 in

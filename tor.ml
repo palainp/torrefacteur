@@ -117,6 +117,10 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         let id = Cstruct.of_string (Hex.to_string fingerprint) in
         let h = Cstruct.of_string key_serv in
         let g = Mirage_crypto_ec.Ed25519.pub_to_cstruct ec_pub in
+        Cstruct.hexdump id ;
+        Cstruct.hexdump h ;
+        Cstruct.hexdump g ;
+        
         let hdata = Cstruct.concat [
             id ;
             h ;
@@ -277,8 +281,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let ip_len_of_cstruct v =
                     match v with
                         | 4 -> 4
-                        | 6 -> 16
-                        | _ -> Log.err (fun m -> m "Unexpected value when reading the IP addr size"); 0
+                        | 6 | 16 -> 16
+                        | _ -> Log.err (fun m -> m "Unexpected value when reading the IP addr size (%d)" v); 0
                 in
                 let _timestamp = Cstruct.BE.get_uint32 payload 0 in
                 (* in the tor-spec, those are refered as other_* but as we received this packet, this is us *)
@@ -340,9 +344,23 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
 
                 let id = Cstruct.of_string (Hex.to_string fingerprint) in
                 let pYx = Mirage_crypto_ec.Ed25519.sign ~key:x kY in
+                Logs.info(fun f -> f "ntor key is %s" ntor_onion_key);
                 let kB = Cstruct.of_string ntor_onion_key in
                 let pBx = Mirage_crypto_ec.Ed25519.sign ~key:x kB in
+                Logs.info(fun f ->  f "mult:");
+                Cstruct.hexdump pBx ;
                 let kX = Mirage_crypto_ec.Ed25519.pub_to_cstruct client_pub_key in
+
+                Logs.info( fun f -> f "id");
+                Cstruct.hexdump id ;
+                let b64key = match Base64.encode ntor_onion_key with
+                | Error _ -> ""
+                | Ok d -> d
+                in
+                Logs.info( fun f -> f "ntor_key %s " b64key);
+                Cstruct.hexdump kB ;
+                Logs.info( fun f -> f "my key");
+                Cstruct.hexdump kX ;
 
                 let secret_input = Cstruct.concat [
                     pYx ;

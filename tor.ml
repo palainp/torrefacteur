@@ -250,8 +250,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                         let _cert = Cstruct.sub payload 3 clen in
                         parse_certs (n-1) (Cstruct.shift payload (3+clen)) (consumed_size+3+clen)
                 in
-                let _consumed_size = parse_certs ncerts (Cstruct.shift payload 3) 0 in
-                (* assert _consumed_size == len *)
+                let consumed_size = parse_certs ncerts (Cstruct.shift payload 3) 0 in
+                assert(1+consumed_size = len); (* adds 1B for the number of certs *)
                 proceed_next tls circID (Cstruct.shift payload (2+len))
 
             | AUTH_CHALLENGE ->
@@ -267,8 +267,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                         let _method = Cstruct.BE.get_uint16 payload 0 in
                         parse_methods (n-1) (Cstruct.shift payload 2) (consumed_size+2)
                 in
-                let _consumed_size = parse_methods n_methods (Cstruct.shift payload 8) 0 in
-                (* assert _consumed_size == len *)
+                let consumed_size = parse_methods n_methods (Cstruct.shift payload 8) 0 in
+                assert(32+2+consumed_size = len); (* adds 32+2B for the header *)
                 proceed_next tls circID (Cstruct.shift payload (2+len))
 
             | NETINFO ->
@@ -305,7 +305,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 proceed_next tls circID (Cstruct.shift payload (Int.max payload_len (6+my_alen+1+consumed_size)))
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
-                Log.info (fun m -> m "DESTROY received: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
+                Log.info (fun m -> m "DESTROY received during version negotiation: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
                 proceed_next tls circID (Cstruct.shift payload payload_len)
 
             | _ ->
@@ -327,29 +327,52 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             match typ with
             | CREATED2 ->
                 Log.info (fun m -> m "CREATED2 received...");
-                let server_pubkey = Cstruct.sub payload 0 32 in
-                let _auth = Cstruct.sub payload 32 32 in
+                let kY = Cstruct.sub payload 0 32 in
+                (* FIXME transform8 Y into something? *)
+                let auth = Cstruct.sub payload 32 32 in
 
                 let protoid   = "ntor-curve25519-sha256-1" in
-                let _t_mac    = Cstruct.of_string (String.concat "" [protoid ; ":mac"]) in
-                let t_key     = Cstruct.of_string (String.concat "" [protoid ; ":key_extract"]) in
-                let _t_verify = String.concat "" [protoid ; ":verify"] in
-                let m_expand  = Cstruct.of_string (String.concat "" [protoid ; ":key_expand"]) in
+                let t_mac    = Cstruct.of_string (protoid ^ ":mac") in
+                let t_key     = Cstruct.of_string (protoid ^ ":key_extract") in
+                let t_verify = Cstruct.of_string (protoid ^ ":verify") in
+                let m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
+                let x = client_priv_key in
 
                 let id = Cstruct.of_string (Hex.to_string fingerprint) in
-                let m1 = Mirage_crypto_ec.Ed25519.sign ~key:client_priv_key server_pubkey in
-                let ntor_onion_key = Cstruct.of_string ntor_onion_key in
-                let m2 = Mirage_crypto_ec.Ed25519.sign ~key:client_priv_key ntor_onion_key in
+                let pYx = Mirage_crypto_ec.Ed25519.sign ~key:x kY in
+                let kB = Cstruct.of_string ntor_onion_key in
+                let pBx = Mirage_crypto_ec.Ed25519.sign ~key:x kB in
+                let kX = Mirage_crypto_ec.Ed25519.pub_to_cstruct client_pub_key in
+
                 let secret_input = Cstruct.concat [
+                    pYx ;
+                    pBx ;
                     id ;
-                    m1 ;
-                    m2 ;
-                    ntor_onion_key ;
-                    Mirage_crypto_ec.Ed25519.pub_to_cstruct client_pub_key ;
-                    server_pubkey ;
+                    kB ;
+                    kX ;
+                    kY ;
                     Cstruct.of_string protoid ;
                 ] in
-                let key_seed = Mirage_crypto.Hash.mac `SHA256 ~key:secret_input t_key in
+
+                let verify = Mirage_crypto.Hash.mac `SHA256 ~key:t_verify secret_input in
+
+                let auth_input = Mirage_crypto.Hash.mac `SHA256 ~key:t_mac (Cstruct.concat [
+                    verify ;
+                    id ;
+                    kB ;
+                    kY ;
+                    kX ;
+                    Cstruct.of_string protoid ;
+                    Cstruct.of_string "Server" ;
+                ]) in
+
+                Log.info( fun f -> f "auth is:");
+                Cstruct.hexdump auth ;
+                Log.info( fun f -> f "auth_input is:");
+                Cstruct.hexdump auth_input ;
+                assert(Cstruct.equal auth auth_input);
+
+                let key_seed = Mirage_crypto.Hash.mac `SHA256 ~key:t_key secret_input in
 (*
                 let verify = HMAC_SHA256(secret_input, "ntor-curve25519-sha256-1:verify")
                 let auth_input = verify | id | ntor_onion_key | server_pub_key | client_pub_key | "ntor-curve25519-sha256-1" | "Server"
@@ -382,7 +405,7 @@ then:
 
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
-                Log.info (fun m -> m "DESTROY received: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
+                Log.info (fun m -> m "extract keys DESTROY received: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
                 proceed_next (Cstruct.shift payload payload_len) fingerprint client_pub_key client_priv_key ntor_onion_key
 
             | _ ->
@@ -446,8 +469,8 @@ then:
                 | Error _ -> assert false
                 | Ok kf ->
         (* 6. *)
-Log.info (fun m -> m "will extend nodes");
                 let rec extend_circuit tls circID ec_pub ec_priv kf_list last_df node_list =
+Log.info (fun m -> m "will extend nodes");
                     match node_list with
                     | [] -> (* node more nodes to extend *)
                         Lwt.return kf_list
@@ -457,7 +480,7 @@ Log.info (fun m -> m "will extend nodes");
                         let df = Cstruct.sub cs 0 hash_len in
                         let kf = Cstruct.sub cs (2*hash_len) key_len in
                         match Mirage_crypto_ec.Ed25519.priv_of_cstruct kf with
-                        | Error _ -> assert false
+                        | Error _ -> Log.err (fun m -> m "Error with priv_of_cstruct"); assert false
                         | Ok kf ->
                         extend_circuit tls circID ec_pub ec_priv (List.cons kf kf_list) df t
                 in

@@ -1,9 +1,11 @@
+(* mirage >= 4.5.0 & < 4.7.0 *)
+
 open Mirage
 
 let secrets_dir = "certs"
 
 let main =
-  foreign
+  main
     ~packages:[
       package "duration" ;
       package "ethernet";

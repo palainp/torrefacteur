@@ -117,10 +117,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         let id = Cstruct.of_string (Hex.to_string fingerprint) in
         let h = Cstruct.of_string key_serv in
         let g = Mirage_crypto_ec.Ed25519.pub_to_cstruct ec_pub in
-        Cstruct.hexdump id ;
-        Cstruct.hexdump h ;
-        Cstruct.hexdump g ;
-        
         let hdata = Cstruct.concat [
             id ;
             h ;
@@ -330,23 +326,53 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             let payload = Cstruct.shift payload 3 in
             match typ with
             | CREATED2 ->
-                Log.info (fun m -> m "CREATED2 received...");
-                let kY = Cstruct.sub payload 0 32 in
-                (* FIXME transform8 Y into something? *)
-                let auth = Cstruct.sub payload 32 32 in
-
                 let protoid   = "ntor-curve25519-sha256-1" in
                 let t_mac    = Cstruct.of_string (protoid ^ ":mac") in
                 let t_key     = Cstruct.of_string (protoid ^ ":key_extract") in
                 let t_verify = Cstruct.of_string (protoid ^ ":verify") in
                 let m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
+
+                Log.info (fun m -> m "CREATED2 received...");
+
+                Logs.info(fun f -> f "valid exp");
+                let msg = "eb a0 9f cc ac 11 87 bf 04 03 20 6e 5e 62 8f b5 6b 01 b8 17 43 3d c4 d1 83 4b 04 9a 0c bd 05 63" in
+                let line = String.split_on_char ' ' msg in
+                let c = String.concat "" line in
+                let fg = `Hex c in
+                let msg = Cstruct.of_string (Hex.to_string fg) in
+                Cstruct.hexdump msg;
+
+                let key = "48 2a 6f 36 ab ba 94 cf cf e4 1c c7 23 06 c8 b8 d1 c6 58 c9 0d 13 f2 55 99 dd 70 d6 a7 d6 19 5a" in
+                let line = String.split_on_char ' ' key in
+                let c = String.concat "" line in
+                let fg = `Hex c in
+                let key = Cstruct.of_string (Hex.to_string fg) in
+                let secret = Mirage_crypto_pk.Z_extra.of_cstruct_be key in
+                Cstruct.hexdump key;
+
+                let expect = "61 9a 4c 48 89 01 4f c4 78 0d 28 01 2c 86 fa 43 d0 7a 7b 1b ae 4d 53 82 da 04 2d d0 69 d8 1f 1e" in
+                let line = String.split_on_char ' ' expect in
+                let c = String.concat "" line in
+                let fg = `Hex c in
+                let expect = Cstruct.of_string (Hex.to_string fg) in
+                Logs.info(fun f -> f "   expected");
+                Cstruct.hexdump expect;
+                Logs.info(fun f -> f "   result");
+                Cstruct.hexdump (Mirage_crypto_pk.Dh.shared secret msg) ;
+
+                let kY = Cstruct.sub payload 0 32 in
+                (* FIXME transform8 Y into something? *)
+                let auth = Cstruct.sub payload 32 32 in
+
                 let x = client_priv_key in
 
                 let id = Cstruct.of_string (Hex.to_string fingerprint) in
-                let pYx = Mirage_crypto_ec.Ed25519.sign ~key:x kY in
+                (* sign returns the concatenation of R and S, and we need only R *)
+                let pYx = Cstruct.sub (Mirage_crypto_ec.Ed25519.sign ~key:x kY) 0 32 in
                 Logs.info(fun f -> f "ntor key is %s" ntor_onion_key);
                 let kB = Cstruct.of_string ntor_onion_key in
-                let pBx = Mirage_crypto_ec.Ed25519.sign ~key:x kB in
+                (* sign returns the concatenation of R and S, and we need only R *)
+                let pBx = Cstruct.sub (Mirage_crypto_ec.Ed25519.sign ~key:x kB) 0 32 in
                 Logs.info(fun f ->  f "mult:");
                 Cstruct.hexdump pBx ;
                 let kX = Mirage_crypto_ec.Ed25519.pub_to_cstruct client_pub_key in

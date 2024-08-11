@@ -113,14 +113,13 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         ] in
         create_packet circID NETINFO payload ~padding:true
 
-    let handshake_client fingerprint key_serv ec_pub =
+    let handshake_client fingerprint key_serv my_pubkey =
         let id = Cstruct.of_string (Hex.to_string fingerprint) in
         let h = Cstruct.of_string key_serv in
-        let g = Mirage_crypto_ec.Ed25519.pub_to_cstruct ec_pub in
         let hdata = Cstruct.concat [
             id ;
             h ;
-            g ;
+            my_pubkey ;
         ] in
         let len = Cstruct.length hdata in
         Cstruct.concat [
@@ -130,14 +129,14 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         ]
 
     (* CREATE2 is a fixed len packet => do not add the len size after the command field *)
-    let create2 circID fingerprint key_serv ec_pub =
-        let payload = handshake_client fingerprint key_serv ec_pub in
+    let create2 circID fingerprint key_serv my_pubkey =
+        let payload = handshake_client fingerprint key_serv my_pubkey in
         create_packet circID CREATE2 payload ~padding:true
 
     (* 5.1.2. EXTEND and EXTENDED *
        6.1. Relay cells *)
-    let extend2 : Int.t -> Mirage_crypto_ec.Ed25519.priv list -> Cstruct.t -> Mirage_crypto_ec.Ed25519.pub -> Nodes.Relay.t -> cell =
-    fun circID kf_list last_df ec_pub next_relay ->
+    let extend2 : Int.t -> Mirage_crypto_ec.Ed25519.priv list -> Cstruct.t -> Cstruct.t -> Nodes.Relay.t -> cell =
+    fun circID kf_list last_df my_pubkey next_relay ->
         let spec = Cstruct.concat [
             uint8_to_cs 1 ;                   (* NSPEC *)
             uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
@@ -145,7 +144,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             uint32_to_cs (* (Ipaddr.to_int32 next_relay.ip_addr) *) 0l ;
             uint16_to_cs (next_relay.port) ;
         ] in
-        let handshake = handshake_client next_relay.fingerprint next_relay.ntor_onion_key ec_pub in
+        let handshake = handshake_client next_relay.fingerprint next_relay.ntor_onion_key my_pubkey in
         let extend2_payload = Cstruct.concat [
             spec ;
             handshake ;
@@ -316,8 +315,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
       in
       proceed_next tls circID payload
 
-    let extract_keys fingerprint ntor_onion_key client_pub_key client_priv_key payload =
-      let rec proceed_next payload fingerprint client_pub_key client_priv_key ntor_onion_key =
+    let extract_keys fingerprint ntor_onion_key secret my_pubkey payload =
+      let rec proceed_next payload fingerprint ntor_onion_key secret my_pubkey =
           let len_payload = Cstruct.length payload in
           if len_payload < 3 then Lwt.return Cstruct.empty
           else begin
@@ -333,60 +332,23 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
 
                 Log.info (fun m -> m "CREATED2 received...");
-
-                Logs.info(fun f -> f "valid exp");
-                let msg = "eb a0 9f cc ac 11 87 bf 04 03 20 6e 5e 62 8f b5 6b 01 b8 17 43 3d c4 d1 83 4b 04 9a 0c bd 05 63" in
-                let line = String.split_on_char ' ' msg in
-                let c = String.concat "" line in
-                let fg = `Hex c in
-                let msg = Cstruct.of_string (Hex.to_string fg) in
-                Cstruct.hexdump msg;
-
-                let key = "48 2a 6f 36 ab ba 94 cf cf e4 1c c7 23 06 c8 b8 d1 c6 58 c9 0d 13 f2 55 99 dd 70 d6 a7 d6 19 5a" in
-                let line = String.split_on_char ' ' key in
-                let c = String.concat "" line in
-                let fg = `Hex c in
-                let key = Cstruct.of_string (Hex.to_string fg) in
-                let secret = Mirage_crypto_pk.Z_extra.of_cstruct_be key in
-                Cstruct.hexdump key;
-
-                let expect = "61 9a 4c 48 89 01 4f c4 78 0d 28 01 2c 86 fa 43 d0 7a 7b 1b ae 4d 53 82 da 04 2d d0 69 d8 1f 1e" in
-                let line = String.split_on_char ' ' expect in
-                let c = String.concat "" line in
-                let fg = `Hex c in
-                let expect = Cstruct.of_string (Hex.to_string fg) in
-                Logs.info(fun f -> f "   expected");
-                Cstruct.hexdump expect;
-                Logs.info(fun f -> f "   result");
-                Cstruct.hexdump (Mirage_crypto_pk.Dh.shared secret msg) ;
-
                 let kY = Cstruct.sub payload 0 32 in
                 (* FIXME transform8 Y into something? *)
                 let auth = Cstruct.sub payload 32 32 in
 
-                let x = client_priv_key in
+                let x = secret in
 
                 let id = Cstruct.of_string (Hex.to_string fingerprint) in
-                (* sign returns the concatenation of R and S, and we need only R *)
-                let pYx = Cstruct.sub (Mirage_crypto_ec.Ed25519.sign ~key:x kY) 0 32 in
-                Logs.info(fun f -> f "ntor key is %s" ntor_onion_key);
-                let kB = Cstruct.of_string ntor_onion_key in
-                (* sign returns the concatenation of R and S, and we need only R *)
-                let pBx = Cstruct.sub (Mirage_crypto_ec.Ed25519.sign ~key:x kB) 0 32 in
-                Logs.info(fun f ->  f "mult:");
-                Cstruct.hexdump pBx ;
-                let kX = Mirage_crypto_ec.Ed25519.pub_to_cstruct client_pub_key in
-
-                Logs.info( fun f -> f "id");
-                Cstruct.hexdump id ;
-                let b64key = match Base64.encode ntor_onion_key with
-                | Error _ -> ""
-                | Ok d -> d
+                let pYx = match Mirage_crypto_ec.X25519.key_exchange x kY with
+                | Error _ -> assert false ;
+                | Ok k -> k
                 in
-                Logs.info( fun f -> f "ntor_key %s " b64key);
-                Cstruct.hexdump kB ;
-                Logs.info( fun f -> f "my key");
-                Cstruct.hexdump kX ;
+                let kB = Cstruct.of_string ntor_onion_key in
+                let pBx = match Mirage_crypto_ec.X25519.key_exchange x kB with
+                | Error _ -> assert false ;
+                | Ok k -> k
+                in
+                let kX = my_pubkey in
 
                 let secret_input = Cstruct.concat [
                     pYx ;
@@ -450,7 +412,7 @@ then:
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
                 Log.info (fun m -> m "extract keys DESTROY received: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
-                proceed_next (Cstruct.shift payload payload_len) fingerprint client_pub_key client_priv_key ntor_onion_key
+                proceed_next (Cstruct.shift payload payload_len) fingerprint ntor_onion_key secret my_pubkey
 
             | _ ->
                 Log.info (fun m -> m "Received UNK packet...");
@@ -458,7 +420,7 @@ then:
                 assert false
           end
       in
-      proceed_next payload fingerprint client_pub_key client_priv_key ntor_onion_key
+      proceed_next payload fingerprint ntor_onion_key secret my_pubkey
 
 (*
       3. If not already connected to the first router in the chain,
@@ -498,14 +460,16 @@ then:
                 Log.info (fun m -> m "established TLS connection to %a:%d"
                       Ipaddr.pp first_node.ip_addr first_node.port);
         (* 4 & 5. *)
-                let (ec_priv, ec_pub) = Mirage_crypto_ec.Ed25519.generate ~g () in
+                let (secret, my_pubkey) = Mirage_crypto_ec.X25519.gen_key ~g () in
+                Logs.info(fun f -> f "pukey len is %d " (Cstruct.length my_pubkey));
+
                 let circID = 1024 in
                 (* assert circID <> 0 and was never used with the first node *)
 
                 send_cell tls (version circID) (negotiate_version tls circID) >>= fun _ ->
 
-                let create2_pkt = create2 circID first_node.fingerprint first_node.ntor_onion_key ec_pub in
-                send_cell tls create2_pkt (extract_keys first_node.fingerprint first_node.ntor_onion_key ec_pub ec_priv) >>= fun cs ->
+                let create2_pkt = create2 circID first_node.fingerprint first_node.ntor_onion_key my_pubkey in
+                send_cell tls create2_pkt (extract_keys first_node.fingerprint first_node.ntor_onion_key secret my_pubkey) >>= fun cs ->
 
                 let df = Cstruct.sub cs 0 hash_len in
                 let kf = Cstruct.sub cs (2*hash_len) key_len in
@@ -513,22 +477,22 @@ then:
                 | Error _ -> assert false
                 | Ok kf ->
         (* 6. *)
-                let rec extend_circuit tls circID ec_pub ec_priv kf_list last_df node_list =
+                let rec extend_circuit tls circID secret my_pubkey kf_list last_df node_list =
 Log.info (fun m -> m "will extend nodes");
                     match node_list with
                     | [] -> (* node more nodes to extend *)
                         Lwt.return kf_list
                     | h::t -> (* extend to h and rec on t *)
-                        let onion_skin = extend2 circID kf_list last_df ec_pub h in
-                        send_cell tls onion_skin (extract_keys h.fingerprint h.ntor_onion_key ec_pub ec_priv) >>= fun cs ->
+                        let onion_skin = extend2 circID kf_list last_df my_pubkey h in
+                        send_cell tls onion_skin (extract_keys h.fingerprint h.ntor_onion_key secret my_pubkey) >>= fun cs ->
                         let df = Cstruct.sub cs 0 hash_len in
                         let kf = Cstruct.sub cs (2*hash_len) key_len in
                         match Mirage_crypto_ec.Ed25519.priv_of_cstruct kf with
                         | Error _ -> Log.err (fun m -> m "Error with priv_of_cstruct"); assert false
                         | Ok kf ->
-                        extend_circuit tls circID ec_pub ec_priv (List.cons kf kf_list) df t
+                        extend_circuit tls circID secret my_pubkey(List.cons kf kf_list) df t
                 in
-                extend_circuit tls circID ec_pub ec_priv [kf] df (List.tl circuit.relay) >>= fun _kf_list ->
+                extend_circuit tls circID secret my_pubkey [kf] df (List.tl circuit.relay) >>= fun _kf_list ->
 Log.info (fun m -> m "then extend to exit");
 
                 Lwt.return_unit

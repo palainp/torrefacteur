@@ -345,7 +345,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let c = String.concat "" line in
                 let fg = `Hex c in
                 let key = Cstruct.of_string (Hex.to_string fg) in
-                let (secret, _) = match Mirage_crypto_ec.X25519.secret_of_cs key with
+                let (xxx, _) = match Mirage_crypto_ec.X25519.secret_of_cs key with
                 | Error _ -> assert false
                 | Ok k -> k
                 in
@@ -359,7 +359,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 Logs.info(fun f -> f "   expected");
                 Cstruct.hexdump expect;
                 Logs.info(fun f -> f "   result");
-                let res = match Mirage_crypto_ec.X25519.key_exchange secret msg with
+                let res = match Mirage_crypto_ec.X25519.key_exchange xxx msg with
                 | Error _ -> assert false
                 | Ok r -> r
                 in

@@ -331,6 +331,42 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let t_verify = Cstruct.of_string (protoid ^ ":verify") in
                 let m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
 
+(* This is for testing purpose, and should be removed, just needed to verify that we compute the right thing*)
+                Logs.info(fun f -> f "valid exp");
+                let msg = "eb a0 9f cc ac 11 87 bf 04 03 20 6e 5e 62 8f b5 6b 01 b8 17 43 3d c4 d1 83 4b 04 9a 0c bd 05 63" in
+                let line = String.split_on_char ' ' msg in
+                let c = String.concat "" line in
+                let fg = `Hex c in
+                let msg = Cstruct.of_string (Hex.to_string fg) in
+                Cstruct.hexdump msg;
+
+                let key = "48 2a 6f 36 ab ba 94 cf cf e4 1c c7 23 06 c8 b8 d1 c6 58 c9 0d 13 f2 55 99 dd 70 d6 a7 d6 19 5a" in
+                let line = String.split_on_char ' ' key in
+                let c = String.concat "" line in
+                let fg = `Hex c in
+                let key = Cstruct.of_string (Hex.to_string fg) in
+                let (secret, _) = match Mirage_crypto_ec.X25519.secret_of_cs key with
+                | Error _ -> assert false
+                | Ok k -> k
+                in
+                Cstruct.hexdump key;
+
+                let expect = "61 9a 4c 48 89 01 4f c4 78 0d 28 01 2c 86 fa 43 d0 7a 7b 1b ae 4d 53 82 da 04 2d d0 69 d8 1f 1e" in
+                let line = String.split_on_char ' ' expect in
+                let c = String.concat "" line in
+                let fg = `Hex c in
+                let expect = Cstruct.of_string (Hex.to_string fg) in
+                Logs.info(fun f -> f "   expected");
+                Cstruct.hexdump expect;
+                Logs.info(fun f -> f "   result");
+                let res = match Mirage_crypto_ec.X25519.key_exchange secret msg with
+                | Error _ -> assert false
+                | Ok r -> r
+                in
+                Cstruct.hexdump res ;
+                assert (expect = res);
+(* *)
+
                 Log.info (fun m -> m "CREATED2 received...");
                 let kY = Cstruct.sub payload 0 32 in
                 (* FIXME transform8 Y into something? *)

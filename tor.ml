@@ -113,12 +113,12 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         ] in
         create_packet circID NETINFO payload ~padding:true
 
-    let handshake_client fingerprint key_serv my_pubkey =
-        let id = Cstruct.of_string (Hex.to_string fingerprint) in
-        let h = Cstruct.of_string key_serv in
+    let handshake_client fingerprint ntor_onion_key my_pubkey =
+        let nodeid = Cstruct.of_string (Hex.to_string fingerprint) in
+        let ntor_onion_key = Cstruct.of_string ntor_onion_key in
         let hdata = Cstruct.concat [
-            id ;
-            h ;
+            nodeid ;
+            ntor_onion_key ;
             my_pubkey ;
         ] in
         let len = Cstruct.length hdata in
@@ -297,8 +297,10 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 in
                 let n_router_addr = Cstruct.get_uint8 payload (6+my_alen) in
                 let (consumed_size, router_aval) = parse_my_addr n_router_addr (Cstruct.shift payload (6+my_alen+1)) 0 Cstruct.empty in
+                Logs.info ( fun f -> f "n_router_addr is %d" n_router_addr);
+                   Cstruct.hexdump router_aval;
 
-                (* for testing purpose, suppose we onlly have 1 IPv4 at the begining in router_aval... *)
+                (* for testing purpose, suppose we only have 1 IPv4 at the begining in router_aval... *)
                 write tls (netinfo circID my_aval (Cstruct.sub router_aval 0 4)) >>= fun _ ->
 
                 proceed_next tls circID (Cstruct.shift payload (Int.max payload_len (6+my_alen+1+consumed_size)))
@@ -331,65 +333,95 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let t_verify = Cstruct.of_string (protoid ^ ":verify") in
                 let m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
 
-(* This is for testing purpose, and should be removed, just needed to verify that we compute the right thing*)
-                Logs.info(fun f -> f "valid exp");
-                let msg = "eb a0 9f cc ac 11 87 bf 04 03 20 6e 5e 62 8f b5 6b 01 b8 17 43 3d c4 d1 83 4b 04 9a 0c bd 05 63" in
-                let line = String.split_on_char ' ' msg in
-                let c = String.concat "" line in
-                let fg = `Hex c in
-                let msg = Cstruct.of_string (Hex.to_string fg) in
-                Cstruct.hexdump msg;
+(* This is for testing purpose, and should be removed, just needed to verify that we compute the right thing *)
+(* ----------------- 
+                let to_cs s =
+                  let line = String.split_on_char ' ' s in
+                  let c = String.concat "" line in
+                  let fg = `Hex c in
+                  Cstruct.of_string (Hex.to_string fg)
+                in
 
-                let key = "48 2a 6f 36 ab ba 94 cf cf e4 1c c7 23 06 c8 b8 d1 c6 58 c9 0d 13 f2 55 99 dd 70 d6 a7 d6 19 5a" in
-                let line = String.split_on_char ' ' key in
-                let c = String.concat "" line in
-                let fg = `Hex c in
-                let key = Cstruct.of_string (Hex.to_string fg) in
-                let (xxx, _) = match Mirage_crypto_ec.X25519.secret_of_cs key with
+                let x  = to_cs "98 71 82 35 9d 3a c0 07 b1 f3 2b 51 a0 cd e9 ab 81 e6 d5 1e cc 91 e8 02 96 23 7a e9 43 53 d5 69" in
+                let (x, _) = match Mirage_crypto_ec.X25519.secret_of_cs x with
                 | Error _ -> assert false
                 | Ok k -> k
                 in
-                Cstruct.hexdump key;
+                let nodeid = to_cs "61 62 63 64 65 66 6f 75 41 62 6f 75 74 53 74 61 69 72 73 2e" in 
+                let kB =     to_cs "81 99 d0 fe c5 ce 80 1b 0c 10 17 f9 99 0f c4 9e b9 b9 7a f7 a7 79 ef ec 7e 6b e8 f8 a5 65 a8 27" in 
+                let kX =     to_cs "0e b6 2f d1 a8 b7 c5 65 3d 05 e6 5e ae 2f 5d 77 75 20 11 3c bf 2f 06 50 08 f6 15 55 da 34 ca 7b" in 
+                let kY =     to_cs "64 87 b5 a7 d0 a3 02 d9 1f e4 ba 1a 17 56 ea 3c 83 e1 27 20 6f 03 53 a1 08 ef 26 14 e2 3e 54 27" in 
 
-                let expect = "61 9a 4c 48 89 01 4f c4 78 0d 28 01 2c 86 fa 43 d0 7a 7b 1b ae 4d 53 82 da 04 2d d0 69 d8 1f 1e" in
-                let line = String.split_on_char ' ' expect in
-                let c = String.concat "" line in
-                let fg = `Hex c in
-                let expect = Cstruct.of_string (Hex.to_string fg) in
-                Logs.info(fun f -> f "   expected");
-                Cstruct.hexdump expect;
-                Logs.info(fun f -> f "   result");
-                let res = match Mirage_crypto_ec.X25519.key_exchange xxx msg with
+                let yx = match Mirage_crypto_ec.X25519.key_exchange x kY with
                 | Error _ -> assert false
                 | Ok r -> r
                 in
-                Cstruct.hexdump res ;
-                assert (expect = res);
-(* *)
+                let yx_expected = to_cs "12 86 ce 57 90 9b 30 ce 84 c3 48 b8 8d ec e0 01 50 c3 c4 4e ea 23 20 c0 7f cf 0d fe 8b 1b fa 10" in
+                assert (yx_expected = yx);
 
-                Log.info (fun m -> m "CREATED2 received...");
-                let kY = Cstruct.sub payload 0 32 in
-                (* FIXME transform8 Y into something? *)
-                let auth = Cstruct.sub payload 32 32 in
-
-                let x = secret in
-
-                let id = Cstruct.of_string (Hex.to_string fingerprint) in
-                let pYx = match Mirage_crypto_ec.X25519.key_exchange x kY with
-                | Error _ -> assert false ;
-                | Ok k -> k
+                let bx = match Mirage_crypto_ec.X25519.key_exchange x kB with
+                | Error _ -> assert false
+                | Ok r -> r
                 in
-                let kB = Cstruct.of_string ntor_onion_key in
-                let pBx = match Mirage_crypto_ec.X25519.key_exchange x kB with
-                | Error _ -> assert false ;
-                | Ok k -> k
-                in
-                let kX = my_pubkey in
+                let bx_expected = to_cs "0f 06 cd cf 9c 00 73 9e 32 71 53 b2 0d 80 1d 97 17 fb 3c e3 d7 b0 36 c9 7e 42 94 16 5d 12 85 3d" in 
+                assert (bx_expected = bx);
 
                 let secret_input = Cstruct.concat [
-                    pYx ;
-                    pBx ;
-                    id ;
+                    yx ;
+                    bx ;
+                    nodeid ;
+                    kB ;
+                    kX ;
+                    kY ;
+                    Cstruct.of_string protoid ;
+                ] in
+
+                let secret_input_expected = to_cs "12 86 ce 57 90 9b 30 ce 84 c3 48 b8 8d ec e0 01 50 c3 c4 4e ea 23 20 c0 7f cf 0d fe 8b 1b fa 10 0f 06 cd cf 9c 00 73 9e 32 71 53 b2 0d 80 1d 97 17 fb 3c e3 d7 b0 36 c9 7e 42 94 16 5d 12 85 3d 61 62 63 64 65 66 6f 75 41 62 6f 75 74 53 74 61 69 72 73 2e 81 99 d0 fe c5 ce 80 1b 0c 10 17 f9 99 0f c4 9e b9 b9 7a f7 a7 79 ef ec 7e 6b e8 f8 a5 65 a8 27 0e b6 2f d1 a8 b7 c5 65 3d 05 e6 5e ae 2f 5d 77 75 20 11 3c bf 2f 06 50 08 f6 15 55 da 34 ca 7b 64 87 b5 a7 d0 a3 02 d9 1f e4 ba 1a 17 56 ea 3c 83 e1 27 20 6f 03 53 a1 08 ef 26 14 e2 3e 54 27 6e 74 6f 72 2d 63 75 72 76 65 32 35 35 31 39 2d 73 68 61 32 35 36 2d 31" in
+                assert (secret_input_expected = secret_input);
+
+                let verify = Mirage_crypto.Hash.mac `SHA256 ~key:t_verify secret_input in
+                let verify_expected = to_cs "af aa 0f 40 8e 63 ba 84 ab cd 2e 37 fc ab 51 88 a1 64 8b 1f 22 62 15 3c 9a 66 60 d0 c8 aa 7b 99" in
+                assert (verify_expected = verify);
+                
+                let auth_input = Cstruct.concat [
+                    verify ;
+                    nodeid ;
+                    kB ;
+                    kY ;
+                    kX ;
+                    Cstruct.of_string protoid ;
+                    Cstruct.of_string "Server" ;
+                ] in
+                let auth_input_expected = to_cs "af aa 0f 40 8e 63 ba 84 ab cd 2e 37 fc ab 51 88 a1 64 8b 1f 22 62 15 3c 9a 66 60 d0 c8 aa 7b 99 61 62 63 64 65 66 6f 75 41 62 6f 75 74 53 74 61 69 72 73 2e 81 99 d0 fe c5 ce 80 1b 0c 10 17 f9 99 0f c4 9e b9 b9 7a f7 a7 79 ef ec 7e 6b e8 f8 a5 65 a8 27 64 87 b5 a7 d0 a3 02 d9 1f e4 ba 1a 17 56 ea 3c 83 e1 27 20 6f 03 53 a1 08 ef 26 14 e2 3e 54 27 0e b6 2f d1 a8 b7 c5 65 3d 05 e6 5e ae 2f 5d 77 75 20 11 3c bf 2f 06 50 08 f6 15 55 da 34 ca 7b 6e 74 6f 72 2d 63 75 72 76 65 32 35 35 31 39 2d 73 68 61 32 35 36 2d 31 53 65 72 76 65 72" in
+                assert (auth_input_expected = auth_input);
+
+                let h_auth_input = Mirage_crypto.Hash.mac `SHA256 ~key:t_mac auth_input in
+                let h_auth_input_expected = to_cs "b6 cb eb ba ef d5 e5 f0 d0 7f 99 a0 eb 66 36 98 32 e1 8b e2 c0 13 f8 f8 2e 3c aa 58 9d d2 46 1a" in                
+                assert (h_auth_input = h_auth_input_expected);
+ ----------------- *)
+                Log.info (fun m -> m "CREATED2 received...");
+                let x = secret in
+                let kX = my_pubkey in
+                let kY = Cstruct.sub payload 0 32 in
+                let kB = Cstruct.of_string ntor_onion_key in
+                let nodeid = Cstruct.of_string (Hex.to_string fingerprint) in
+
+                let h_auth_expected = Cstruct.sub payload 32 32 in
+
+                let yx = match Mirage_crypto_ec.X25519.key_exchange x kY with
+                | Error _ -> assert false
+                | Ok r -> r
+                in
+
+                let bx = match Mirage_crypto_ec.X25519.key_exchange x kB with
+                | Error _ -> assert false
+                | Ok r -> r
+                in
+
+                let secret_input = Cstruct.concat [
+                    yx ;
+                    bx ;
+                    nodeid ;
                     kB ;
                     kX ;
                     kY ;
@@ -398,21 +430,23 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
 
                 let verify = Mirage_crypto.Hash.mac `SHA256 ~key:t_verify secret_input in
 
-                let auth_input = Mirage_crypto.Hash.mac `SHA256 ~key:t_mac (Cstruct.concat [
+                let auth_input = Cstruct.concat [
                     verify ;
-                    id ;
+                    nodeid ;
                     kB ;
                     kY ;
                     kX ;
                     Cstruct.of_string protoid ;
                     Cstruct.of_string "Server" ;
-                ]) in
+                ] in
 
-                Log.info( fun f -> f "auth is:");
-                Cstruct.hexdump auth ;
-                Log.info( fun f -> f "auth_input is:");
-                Cstruct.hexdump auth_input ;
-                assert(Cstruct.equal auth auth_input);
+                let h_auth_input = Mirage_crypto.Hash.mac `SHA256 ~key:t_mac auth_input in
+
+                Log.info( fun f -> f "h_auth_expected is:");
+                Cstruct.hexdump h_auth_expected ;
+                Log.info( fun f -> f "h_auth_input is:");
+                Cstruct.hexdump h_auth_input ;
+                assert(h_auth_expected = h_auth_input);
 
                 let key_seed = Mirage_crypto.Hash.mac `SHA256 ~key:t_key secret_input in
 (*

@@ -334,7 +334,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
 
 (* This is for testing purpose, and should be removed, just needed to verify that we compute the right thing *)
-(* ----------------- 
+(* ----------------- *)
                 let to_cs s =
                   let line = String.split_on_char ' ' s in
                   let c = String.concat "" line in
@@ -398,7 +398,9 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let h_auth_input = Mirage_crypto.Hash.mac `SHA256 ~key:t_mac auth_input in
                 let h_auth_input_expected = to_cs "b6 cb eb ba ef d5 e5 f0 d0 7f 99 a0 eb 66 36 98 32 e1 8b e2 c0 13 f8 f8 2e 3c aa 58 9d d2 46 1a" in                
                 assert (h_auth_input = h_auth_input_expected);
- ----------------- *)
+(* ----------------- *)
+(* Here we can continue as usual, H and EXP are the good ones... *)
+
                 Log.info (fun m -> m "CREATED2 received...");
                 let x = secret in
                 let kX = my_pubkey in

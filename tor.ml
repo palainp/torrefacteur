@@ -317,6 +317,12 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
       in
       proceed_next tls circID payload
 
+    let to_cs s =
+      let line = String.split_on_char ' ' s in
+      let c = String.concat "" line in
+      let fg = `Hex c in
+      Cstruct.of_string (Hex.to_string fg)
+
     let extract_keys fingerprint ntor_onion_key secret my_pubkey payload =
       let rec proceed_next payload fingerprint ntor_onion_key secret my_pubkey =
           let len_payload = Cstruct.length payload in
@@ -335,13 +341,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
 
 (* This is for testing purpose, and should be removed, just needed to verify that we compute the right thing *)
 (* ----------------- *)
-                let to_cs s =
-                  let line = String.split_on_char ' ' s in
-                  let c = String.concat "" line in
-                  let fg = `Hex c in
-                  Cstruct.of_string (Hex.to_string fg)
-                in
-
+(*
                 let x  = to_cs "98 71 82 35 9d 3a c0 07 b1 f3 2b 51 a0 cd e9 ab 81 e6 d5 1e cc 91 e8 02 96 23 7a e9 43 53 d5 69" in
                 let (x, _) = match Mirage_crypto_ec.X25519.secret_of_cs x with
                 | Error _ -> assert false
@@ -398,15 +398,33 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let h_auth_input = Mirage_crypto.Hash.mac `SHA256 ~key:t_mac auth_input in
                 let h_auth_input_expected = to_cs "b6 cb eb ba ef d5 e5 f0 d0 7f 99 a0 eb 66 36 98 32 e1 8b e2 c0 13 f8 f8 2e 3c aa 58 9d d2 46 1a" in                
                 assert (h_auth_input = h_auth_input_expected);
+*)
+
+(*
+let nodeid = to_cs "74 68 69 73 69 73 61 74 6f 72 6e 6f 64 65 69 64 24 23 25 5e" in
+let kB =     to_cs "11 e4 74 75 2f 5c 59 80 7d 43 f3 36 27 22 ac ef 73 44 46 3e 11 0a c4 21 97 59 e2 ee 5b 76 c4 70" in
+let x =      to_cs "d8 d9 82 04 e6 a5 da be 1e 86 e4 ac b4 39 be 02 00 db 7e 7b b5 40 12 b4 d5 8e 0c 79 89 d5 ef 72" in
+let (x, _) = match Mirage_crypto_ec.X25519.secret_of_cs x with
+| Error _ -> assert false
+| Ok k -> k
+in
+let kX =      to_cs "b2 bb e9 43 01 61 07 e3 07 bb f1 3c 96 04 7c 47 d4 f4 82 23 e2 d7 a3 8d 7f 66 3b c9 06 e5 67 42" in
+let payload = to_cs "59 27 28 8d b9 9d a8 67 96 2a cc f7 cb e9 91 b9 46 86 d8 f4 89 12 dc 1a a3 3f de 4b f3 bd aa 10 19 b5 4b 74 78 0c 9a a9 dd 50 7a 07 e3 7b ae 67 24 fa 5e 63 11 c6 86 e5 c6 35 2a a5 ad 52 60 e3" in
+*)
+
 (* ----------------- *)
 (* Here we can continue as usual, H and EXP are the good ones... *)
 
                 Log.info (fun m -> m "CREATED2 received...");
                 let x = secret in
                 let kX = my_pubkey in
-                let kY = Cstruct.sub payload 0 32 in
+
                 let kB = Cstruct.of_string ntor_onion_key in
+Cstruct.hexdump kB;
                 let nodeid = Cstruct.of_string (Hex.to_string fingerprint) in
+Cstruct.hexdump nodeid;
+
+                let kY = Cstruct.sub payload 0 32 in
 
                 let h_auth_expected = Cstruct.sub payload 32 32 in
 
@@ -448,7 +466,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 Cstruct.hexdump h_auth_expected ;
                 Log.info( fun f -> f "h_auth_input is:");
                 Cstruct.hexdump h_auth_input ;
-                assert(h_auth_expected = h_auth_input);
+                assert(Cstruct.equal   h_auth_expected h_auth_input);
 
                 let key_seed = Mirage_crypto.Hash.mac `SHA256 ~key:t_key secret_input in
 (*
@@ -533,14 +551,15 @@ then:
                       Ipaddr.pp first_node.ip_addr first_node.port);
         (* 4 & 5. *)
                 let (secret, my_pubkey) = Mirage_crypto_ec.X25519.gen_key ~g () in
-                Logs.info(fun f -> f "pukey len is %d " (Cstruct.length my_pubkey));
 
                 let circID = 1024 in
                 (* assert circID <> 0 and was never used with the first node *)
 
                 send_cell tls (version circID) (negotiate_version tls circID) >>= fun _ ->
 
-                let create2_pkt = create2 circID first_node.fingerprint first_node.ntor_onion_key my_pubkey in
+                let second_node = List.hd (List.tl circuit.relay) in
+
+                let create2_pkt = create2 circID first_node.fingerprint second_node.ntor_onion_key my_pubkey in
                 send_cell tls create2_pkt (extract_keys first_node.fingerprint first_node.ntor_onion_key secret my_pubkey) >>= fun cs ->
 
                 let df = Cstruct.sub cs 0 hash_len in

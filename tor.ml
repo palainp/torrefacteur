@@ -113,9 +113,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         ] in
         create_packet circID NETINFO payload ~padding:true
 
-    let handshake_client fingerprint ntor_onion_key my_pubkey =
-        let nodeid = Cstruct.of_string (Hex.to_string fingerprint) in
-        let ntor_onion_key = Cstruct.of_string ntor_onion_key in
+    let handshake_client nodeid ntor_onion_key my_pubkey =
         let hdata = Cstruct.concat [
             nodeid ;
             ntor_onion_key ;
@@ -129,8 +127,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         ]
 
     (* CREATE2 is a fixed len packet => do not add the len size after the command field *)
-    let create2 circID fingerprint key_serv my_pubkey =
-        let payload = handshake_client fingerprint key_serv my_pubkey in
+    let create2 circID nodeid ntor_onion_key my_pubkey =
+        let payload = handshake_client nodeid ntor_onion_key my_pubkey in
         create_packet circID CREATE2 payload ~padding:true
 
     (* 5.1.2. EXTEND and EXTENDED *
@@ -144,7 +142,9 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             uint32_to_cs (* (Ipaddr.to_int32 next_relay.ip_addr) *) 0l ;
             uint16_to_cs (next_relay.port) ;
         ] in
-        let handshake = handshake_client next_relay.fingerprint next_relay.ntor_onion_key my_pubkey in
+        let next_nodeid = Cstruct.of_string (Hex.to_string next_relay.fingerprint) in
+        let next_ntor_onion_key = Cstruct.of_string next_relay.ntor_onion_key in
+        let handshake = handshake_client next_nodeid next_ntor_onion_key my_pubkey in
         let extend2_payload = Cstruct.concat [
             spec ;
             handshake ;
@@ -323,8 +323,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
       let fg = `Hex c in
       Cstruct.of_string (Hex.to_string fg)
 
-    let extract_keys fingerprint ntor_onion_key secret my_pubkey payload =
-      let rec proceed_next payload fingerprint ntor_onion_key secret my_pubkey =
+    let extract_keys nodeid ntor_onion_key secret my_pubkey payload =
+      let rec proceed_next payload nodeid ntor_onion_key secret my_pubkey =
           let len_payload = Cstruct.length payload in
           if len_payload < 3 then Lwt.return Cstruct.empty
           else begin
@@ -404,11 +404,12 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
 let nodeid = to_cs "74 68 69 73 69 73 61 74 6f 72 6e 6f 64 65 69 64 24 23 25 5e" in
 let kB =     to_cs "11 e4 74 75 2f 5c 59 80 7d 43 f3 36 27 22 ac ef 73 44 46 3e 11 0a c4 21 97 59 e2 ee 5b 76 c4 70" in
 let x =      to_cs "d8 d9 82 04 e6 a5 da be 1e 86 e4 ac b4 39 be 02 00 db 7e 7b b5 40 12 b4 d5 8e 0c 79 89 d5 ef 72" in
-let (x, _) = match Mirage_crypto_ec.X25519.secret_of_cs x with
+let (x, xpub) = match Mirage_crypto_ec.X25519.secret_of_cs x with
 | Error _ -> assert false
 | Ok k -> k
 in
 let kX =      to_cs "b2 bb e9 43 01 61 07 e3 07 bb f1 3c 96 04 7c 47 d4 f4 82 23 e2 d7 a3 8d 7f 66 3b c9 06 e5 67 42" in
+assert(Cstruct.equal kX xpub);
 let payload = to_cs "59 27 28 8d b9 9d a8 67 96 2a cc f7 cb e9 91 b9 46 86 d8 f4 89 12 dc 1a a3 3f de 4b f3 bd aa 10 19 b5 4b 74 78 0c 9a a9 dd 50 7a 07 e3 7b ae 67 24 fa 5e 63 11 c6 86 e5 c6 35 2a a5 ad 52 60 e3" in
 *)
 
@@ -418,10 +419,8 @@ let payload = to_cs "59 27 28 8d b9 9d a8 67 96 2a cc f7 cb e9 91 b9 46 86 d8 f4
                 Log.info (fun m -> m "CREATED2 received...");
                 let x = secret in
                 let kX = my_pubkey in
-
-                let kB = Cstruct.of_string ntor_onion_key in
+                let kB = ntor_onion_key in
 Cstruct.hexdump kB;
-                let nodeid = Cstruct.of_string (Hex.to_string fingerprint) in
 Cstruct.hexdump nodeid;
 
                 let kY = Cstruct.sub payload 0 32 in
@@ -502,7 +501,7 @@ then:
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
                 Log.info (fun m -> m "extract keys DESTROY received: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
-                proceed_next (Cstruct.shift payload payload_len) fingerprint ntor_onion_key secret my_pubkey
+                proceed_next (Cstruct.shift payload payload_len) nodeid ntor_onion_key secret my_pubkey
 
             | _ ->
                 Log.info (fun m -> m "Received UNK packet...");
@@ -510,7 +509,7 @@ then:
                 assert false
           end
       in
-      proceed_next payload fingerprint ntor_onion_key secret my_pubkey
+      proceed_next payload nodeid ntor_onion_key secret my_pubkey
 
 (*
       3. If not already connected to the first router in the chain,
@@ -527,7 +526,7 @@ then:
       6. For each subsequent onion router R (R_2 through R_N), extend
          the circuit to R.
 *)
-    let connect_circuit stack circuit g =
+    let connect_circuit stack circuit _g =
         (* TODO: if circuit.relay is empty, only use the exit node... *)
         (* 3. *)
         let first_node = List.hd circuit.relay in
@@ -550,17 +549,26 @@ then:
                 Log.info (fun m -> m "established TLS connection to %a:%d"
                       Ipaddr.pp first_node.ip_addr first_node.port);
         (* 4 & 5. *)
-                let (secret, my_pubkey) = Mirage_crypto_ec.X25519.gen_key ~g () in
+                (* let (secret, my_pubkey) = Mirage_crypto_ec.X25519.gen_key ~g () in *)
+let x =      to_cs "d8 d9 82 04 e6 a5 da be 1e 86 e4 ac b4 39 be 02 00 db 7e 7b b5 40 12 b4 d5 8e 0c 79 89 d5 ef 72" in
+let (secret, my_pubkey) = match Mirage_crypto_ec.X25519.secret_of_cs x with
+| Error _ -> assert false
+| Ok k -> k
+in
+let kX =      to_cs "b2 bb e9 43 01 61 07 e3 07 bb f1 3c 96 04 7c 47 d4 f4 82 23 e2 d7 a3 8d 7f 66 3b c9 06 e5 67 42" in
+assert(Cstruct.equal kX my_pubkey);
 
                 let circID = 1024 in
                 (* assert circID <> 0 and was never used with the first node *)
 
                 send_cell tls (version circID) (negotiate_version tls circID) >>= fun _ ->
 
-                let second_node = List.hd (List.tl circuit.relay) in
+                (* let second_node = List.hd (List.tl circuit.relay) in *)
+                let nodeid = Cstruct.of_string (Hex.to_string first_node.fingerprint) in
+                let ntor_onion_key = Cstruct.of_string first_node.ntor_onion_key in
 
-                let create2_pkt = create2 circID first_node.fingerprint second_node.ntor_onion_key my_pubkey in
-                send_cell tls create2_pkt (extract_keys first_node.fingerprint first_node.ntor_onion_key secret my_pubkey) >>= fun cs ->
+                let create2_pkt = create2 circID nodeid ntor_onion_key my_pubkey in
+                send_cell tls create2_pkt (extract_keys nodeid ntor_onion_key secret my_pubkey) >>= fun cs ->
 
                 let df = Cstruct.sub cs 0 hash_len in
                 let kf = Cstruct.sub cs (2*hash_len) key_len in
@@ -575,7 +583,9 @@ Log.info (fun m -> m "will extend nodes");
                         Lwt.return kf_list
                     | h::t -> (* extend to h and rec on t *)
                         let onion_skin = extend2 circID kf_list last_df my_pubkey h in
-                        send_cell tls onion_skin (extract_keys h.fingerprint h.ntor_onion_key secret my_pubkey) >>= fun cs ->
+                        let nodeid = Cstruct.of_string (Hex.to_string h.fingerprint) in
+                        let ntor_onion_key = Cstruct.of_string h.ntor_onion_key in
+                        send_cell tls onion_skin (extract_keys nodeid ntor_onion_key secret my_pubkey) >>= fun cs ->
                         let df = Cstruct.sub cs 0 hash_len in
                         let kf = Cstruct.sub cs (2*hash_len) key_len in
                         match Mirage_crypto_ec.Ed25519.priv_of_cstruct kf with

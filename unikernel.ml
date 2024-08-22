@@ -27,8 +27,8 @@ module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.P
     let start _random _time _pclock stack ctx =
         (* When testing, it can be useful to always have the same randomized nodes selection.
            Remove this later...
-        Random.self_init () ;
         *)
+        Random.self_init () ;
         let g = Mirage_crypto_rng.(create ~seed:(Cstruct.of_string "111213") (module Fortuna)) in
 
         Tor_db.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->

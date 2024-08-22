@@ -145,8 +145,8 @@ assert (Cstruct.equal shared_secret_a shared_secret_b);
 
 (* **************** *)
 (* A test where we don't control the server ntor priv key nor ephemeral priv key. Values were extracted from ntor_ref.py *)
-let server_id = base16_decode "74686973697361746f726e6f646569642423255e" in
-let server_ntor_pubkey = base16_decode "11e474752f5c59807d43f3362722acef7344463e110ac4219759e2ee5b76c470" in
+let server_id = cs_of_str (base16_decode "74686973697361746f726e6f646569642423255e") in
+let server_ntor_pubkey = cs_of_str (base16_decode "11e474752f5c59807d43f3362722acef7344463e110ac4219759e2ee5b76c470") in
 let test_client_ephemeral_key = base16_decode "d8d98204e6a5dabe1e86e4acb439be0200db7e7bb54012b4d58e0c7989d5ef72" in
 
 let (client_ephemeral_privkey, client_ephemeral_pubkey) = sec_pub_of_cs (cs_of_str test_client_ephemeral_key) in

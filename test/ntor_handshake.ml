@@ -36,7 +36,7 @@ let _m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
      verify = H(secret_input, t_verify)
      auth_input = verify | ID | B | Y | X | PROTOID | "Server"
 *)
-let server_handshake server_id (server_ntor_privkey, server_ntor_pubkey) client_ephemeral_pubkey x (server_ephemeral_privkey, server_ephemeral_pubkey) =
+let server_handshake server_id (server_ntor_privkey, server_ntor_pubkey) client_ephemeral_pubkey (server_ephemeral_privkey, server_ephemeral_pubkey) =
   let xy = match Mirage_crypto_ec.X25519.key_exchange server_ephemeral_privkey client_ephemeral_pubkey with
   | Error _ -> assert false
   | Ok r -> r
@@ -75,7 +75,7 @@ in
      verify = H(secret_input, t_verify)
      auth_input = verify | ID | B | Y | X | PROTOID | "Server"
 *)
-let client_handshake server_id server_ntor_pubkey server_ephemeral_pubkey (client_ephemeral_privkey, client_ephemeral_pubkey) x =
+let client_handshake server_id server_ntor_pubkey server_ephemeral_pubkey (client_ephemeral_privkey, client_ephemeral_pubkey) =
   let yx = match Mirage_crypto_ec.X25519.key_exchange client_ephemeral_privkey server_ephemeral_pubkey with
   | Error _ -> assert false
   | Ok r -> r

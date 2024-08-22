@@ -131,15 +131,35 @@ assert (Cstruct.equal server_ntor_pubkey test_server_ntor_pubkey);
 
 let (client_ephemeral_privkey, client_ephemeral_pubkey) = sec_pub_of_cs (cs_of_str test_client_ephemeral_key) in
 let test_client_ephemeral_pubkey = cs_of_str (base16_decode "09fb2509c1c42bf4851fdeed00a0c243afd0740c0425c200eaf1ce3c6f27a244" in
-assert (Cstruct.equal server_ntor_pubkey test_server_ntor_pubkey);
+assert (Cstruct.equal client_ephemeral_pubkey test_client_ephemeral_pubkey);
 
 let (server_ephemeral_privkey, server_ephemeral_pubkey) = sec_pub_of_cs (cs_of_str test_server_ephemeral_key) in
 let test_server_ephemeral_pubkey = cs_of_str (base16_decode "e34b5fb453038cee794ba20496e47db1b5ad4592ceac21c4530129afc7951f68" in
-assert (Cstruct.equal server_ntor_pubkey test_server_ntor_pubkey);
+assert (Cstruct.equal server_ephemeral_pubkey test_server_ephemeral_pubkey);
 
 let _client_keypair = create server_id server_ntor_pubkey client_ephemeral_pubkey in
-let shared_secret_a = server_handshake server_id (server_ntor_privkey, server_ntor_pubkey) client_ephemeral_pubkey x (server_ephemeral_privkey, server_ephemeral_pubkey) in
-let shared_secret_b = client_handshake server_id server_ntor_pubkey server_ephemeral_pubkey (client_ephemeral_privkey, client_ephemeral_pubkey) x in
+let shared_secret_a = server_handshake server_id (server_ntor_privkey, server_ntor_pubkey) client_ephemeral_pubkey (server_ephemeral_privkey, server_ephemeral_pubkey) in
+let shared_secret_b = client_handshake server_id server_ntor_pubkey server_ephemeral_pubkey (client_ephemeral_privkey, client_ephemeral_pubkey) in
 
 assert (Cstruct.equal shared_secret_a shared_secret_b);
-Logs.info(fun f -> f "test handshake is ok !");
+
+(* **************** *)
+(* A test where we don't control the server ntor priv key nor ephemeral priv key. Values were extracted from ntor_ref.py *)
+let server_id = base16_decode "74686973697361746f726e6f646569642423255e" in
+let server_ntor_pubkey = base16_decode "11e474752f5c59807d43f3362722acef7344463e110ac4219759e2ee5b76c470" in
+let test_client_ephemeral_key = base16_decode "d8d98204e6a5dabe1e86e4acb439be0200db7e7bb54012b4d58e0c7989d5ef72" in
+
+let (client_ephemeral_privkey, client_ephemeral_pubkey) = sec_pub_of_cs (cs_of_str test_client_ephemeral_key) in
+let test_client_ephemeral_pubkey = cs_of_str (base16_decode "b2bbe943016107e307bbf13c96047c47d4f48223e2d7a38d7f663bc906e56742" in
+assert (Cstruct.equal client_ephemeral_pubkey test_client_ephemeral_pubkey);
+
+(* payload is the handshake reply from a router *)
+let payload = to_cs "5927288db99da867962accf7cbe991b94686d8f48912dc1aa33fde4bf3bdaa1019b54b74780c9aa9dd507a07e37bae6724fa5e6311c686e5c6352aa5ad5260e3" in
+
+let server_ephemeral_pubkey = Cstruct.sub payload 0 32 in
+let shared_secret_a = Cstruct.sub payload 32 32 in
+let shared_secret_b = client_handshake server_id server_ntor_pubkey server_ephemeral_pubkey (client_ephemeral_privkey, client_ephemeral_pubkey) in
+
+assert (Cstruct.equal shared_secret_a shared_secret_b);
+
+Logs.info(fun f -> f "tests handshake are ok !");

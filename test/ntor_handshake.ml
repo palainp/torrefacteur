@@ -26,6 +26,9 @@ let _t_key     = Cstruct.of_string (protoid ^ ":key_extract") in
 let t_verify = Cstruct.of_string (protoid ^ ":verify") in
 let _m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
 
+
+let hmac_verify = Mirage_crypto.Hash.mac `SHA256 ~key:t_verify in
+let hmac_mac = Mirage_crypto.Hash.mac `SHA256 ~key:t_mac in
 (*
 
    The server generates a keypair of y,Y = KEYGEN(), and uses its ntor
@@ -54,7 +57,7 @@ let server_handshake server_id (server_ntor_privkey, server_ntor_pubkey) client_
       server_ephemeral_pubkey ;
       Cstruct.of_string protoid ;
   ] in
-  let verify = Mirage_crypto.Hash.mac `SHA256 ~key:t_verify secret_input in
+  let verify = hmac_verify secret_input in
   let auth_input = Cstruct.concat [
       verify ;
       server_id ;
@@ -64,7 +67,10 @@ let server_handshake server_id (server_ntor_privkey, server_ntor_pubkey) client_
       Cstruct.of_string protoid ;
       Cstruct.of_string "Server" ;
   ] in
-  Mirage_crypto.Hash.mac `SHA256 ~key:t_mac auth_input
+  Cstruct.concat [
+    server_ephemeral_pubkey ;
+    hmac_mac auth_input ;
+  ] in
 in
 
 (*
@@ -93,7 +99,7 @@ let client_handshake server_id server_ntor_pubkey server_ephemeral_pubkey (clien
       server_ephemeral_pubkey ;
       Cstruct.of_string protoid ;
   ] in
-  let verify = Mirage_crypto.Hash.mac `SHA256 ~key:t_verify secret_input in
+  let verify = hmac_verify secret_input in
   let auth_input = Cstruct.concat [
       verify ;
       server_id ;
@@ -103,54 +109,105 @@ let client_handshake server_id server_ntor_pubkey server_ephemeral_pubkey (clien
       Cstruct.of_string protoid ;
       Cstruct.of_string "Server" ;
   ] in
-  Mirage_crypto.Hash.mac `SHA256 ~key:t_mac auth_input
+  hmac_mac auth_input
 in
 
 let base16_decode str =
   let fg = `Hex str in
-  Hex.to_string fg
+  Cstruct.of_string (Hex.to_string fg)
 in
 
-let sec_pub_of_cs cs = match Mirage_crypto_ec.X25519.secret_of_cs cs with
+let sec_pub_of_cs check_pub cs = match Mirage_crypto_ec.X25519.secret_of_cs cs with
   | Error _ -> assert false
-  | Ok k -> k
+  | Ok (s, p) -> 
+    assert (Cstruct.equal p check_pub)
+    (s, p)
 in
-
-let cs_of_str str = Cstruct.of_string str in
 
 (* **************** *)
 (* from https://github.com/tallaproject/onion/blob/develop/src/onion_ntor.erl#L259-L273 *)
-let server_id = cs_of_str "iToldYouAboutStairs." in
-let test_server_ntor_key = base16_decode "b878405ccfe99f9b888be56c80121bfb5ba5bf4e765774f75dbcec901d70044a"  in
-let test_client_ephemeral_key = base16_decode "b85baebae6149867de41c9e4fc33f7ab9abe3fa146b3dfb0408ca49942841479" in
-let test_server_ephemeral_key = base16_decode "2830171ac0af06c98c44f6a3e05a29cc81dd67ae41ae43f11816b989055d636d" in
+let server_id = Cstruct.of_string "iToldYouAboutStairs." in
 
-let (server_ntor_privkey, server_ntor_pubkey) = sec_pub_of_cs (cs_of_str test_server_ntor_key) in
-let test_server_ntor_pubkey = cs_of_str (base16_decode "0e3b9a3638cbb26225986f1b47890960a5356b947c32e470f12774015bcf1114" in
-assert (Cstruct.equal server_ntor_pubkey test_server_ntor_pubkey);
+(* test create *)
+let server_ntor_key = base16_decode "122fcc3441833e6240940c0a695dcfab70bcd4ce81f3a2d880ca66b55a7f9056" in
+let (client_ephemeral_secret, client_ephemeral_pubkey) = sec_pub_of_cs
+                     (base16_decode "d56771c950f82086cc698e807107d81b0570dfef16b9bc1c49415f98186fd65e") (* pub *)
+                     (base16_decode "10586a2a14d8cf85a52d488e999c29bc1ab64bd4082d66a33e20601db2cdc973") (* secret *)
+                     in
+let client1 = create server_id server_ntor_pubkey client_ephemeral_pubkey in
+let test_create = Cstruct.concat [
+    base16_decode "69546f6c64596f7541626f75745374616972732e12" ;
+    base16_decode "2fcc3441833e6240940c0a695dcfab70bcd4ce81f3" ;
+    base16_decode "a2d880ca66b55a7f9056d56771c950f82086cc698e" ;
+    base16_decode "807107d81b0570dfef16b9bc1c49415f98186fd65e" ;
+] in
+assert (Cstruct.equal client1 test_create);
 
-let (client_ephemeral_privkey, client_ephemeral_pubkey) = sec_pub_of_cs (cs_of_str test_client_ephemeral_key) in
-let test_client_ephemeral_pubkey = cs_of_str (base16_decode "09fb2509c1c42bf4851fdeed00a0c243afd0740c0425c200eaf1ce3c6f27a244" in
-assert (Cstruct.equal client_ephemeral_pubkey test_client_ephemeral_pubkey);
+(* test server handshake *)
+let (server_ntor_secret, server_ntor_pubkey) = sec_pub_of_cs
+                     (base16_decode "e0ee36663df2062500f3ba3ea93829ef1319a85c5e4a31cbb771208952bf681a") (* pub *)
+                     (base16_decode "6010b2d3d047e7a5b31c13b5c7e9c7041431ef6732e750654750c7dd2c7fd569") (* secret *)
+                     in
+let client_ephemeral_pubkey = base16_decode "968cd69194860780dd05d99e992c52bb48f0ed8bd11ee4d274a735d07e7e042a" in
+let (server_ephemeral_secret, server_ephemeral_pubkey) = sec_pub_of_cs
+                     (base16_decode "3afbc0ae70195b88b30a77186372a48978b671bb0ed6b67de7ab33e04c5b9c02") (* pub *)
+                     (base16_decode "f81bced970948eb5c334ae14168e987516bb23f2130c74bcc2312f609b851871") (* secret *)
+                     in
+let server_reply = server_handshake server_id (server_ntor_privkey, server_ntor_pubkey) client_ephemeral_pubkey (server_ephemeral_privkey, server_ephemeral_pubkey) in
+let test_server_handshake = base16_decode "3afbc0ae70195b88b30a77186372a48978b671bb0ed6b67de7ab33e04c5b9c024ce6b76a222ae4b8ed04681287e95731d701302e8b87e3b7ef823c0d62aa0dbc" in
+assert (Cstruct.equal server_reply test_server_handshake);
 
-let (server_ephemeral_privkey, server_ephemeral_pubkey) = sec_pub_of_cs (cs_of_str test_server_ephemeral_key) in
-let test_server_ephemeral_pubkey = cs_of_str (base16_decode "e34b5fb453038cee794ba20496e47db1b5ad4592ceac21c4530129afc7951f68" in
-assert (Cstruct.equal server_ephemeral_pubkey test_server_ephemeral_pubkey);
+(* test client handshake *)
+let server_ntor_pubkey = base16_decode "e0ee36663df2062500f3ba3ea93829ef1319a85c5e4a31cbb771208952bf681a" in
+let server_ephemeral_pubkey = base16_decode "e0ee36663df2062500f3ba3ea93829ef1319a85c5e4a31cbb771208952bf681a" in
+let (client_ephemeral_secret, client_ephemeral_pubkey) = sec_pub_of_cs
+                     (base16_decode "968cd69194860780dd05d99e992c52bb48f0ed8bd11ee4d274a735d07e7e042a") (* pub *)
+                     (base16_decode "803c44b41a780e7986e0835ad321db5c81aec58f3cb8644255d5b17318335b55") (* secret *)
+                     in
+let auth = base16_decode "4ce6b76a222ae4b8ed04681287e95731d701302e8b87e3b7ef823c0d62aa0dbc" in
+let client_auth = client_handshake server_id server_ntor_pubkey server_ephemeral_pubkey (client_ephemeral_privkey, client_ephemeral_pubkey) in
+assert (Cstruct.equal client_auth auth);
 
-let _client_keypair = create server_id server_ntor_pubkey client_ephemeral_pubkey in
+(* test handshake *)    
+let (server_ntor_secret, server_ntor_pubkey) = sec_pub_of_cs
+                     (base16_decode "0e3b9a3638cbb26225986f1b47890960a5356b947c32e470f12774015bcf1114") (* pub *)
+                     (base16_decode "b878405ccfe99f9b888be56c80121bfb5ba5bf4e765774f75dbcec901d70044a") (* secret *)
+                     in
+let (client_ephemeral_secret, client_ephemeral_pubkey) = sec_pub_of_cs
+                     (base16_decode "09fb2509c1c42bf4851fdeed00a0c243afd0740c0425c200eaf1ce3c6f27a244") (* pub *)
+                     (base16_decode "b85baebae6149867de41c9e4fc33f7ab9abe3fa146b3dfb0408ca49942841479") (* secret *)
+                     in
+let (server_ephemeral_secret, server_ephemeral_pubkey) = sec_pub_of_cs
+                     (base16_decode "e34b5fb453038cee794ba20496e47db1b5ad4592ceac21c4530129afc7951f68") (* pub *)
+                     (base16_decode "2830171ac0af06c98c44f6a3e05a29cc81dd67ae41ae43f11816b989055d636d") (* secret *)
+                     in
+
 let shared_secret_a = server_handshake server_id (server_ntor_privkey, server_ntor_pubkey) client_ephemeral_pubkey (server_ephemeral_privkey, server_ephemeral_pubkey) in
 let shared_secret_b = client_handshake server_id server_ntor_pubkey server_ephemeral_pubkey (client_ephemeral_privkey, client_ephemeral_pubkey) in
 
 assert (Cstruct.equal shared_secret_a shared_secret_b);
 
+(* test hmac *)
+assert (Cstruct.equal (hmac_verify (base16_decode "")) (base16_decode "1e2a1675024656f174fd05d95f26aaa7f9531677e4eed4e76da02269b85a34c4");
+assert (Cstruct.equal (hmac_verify (base16_decode "foobar")) (base16_decode "e00972e74219a0f97c349e73552b1734896a6f74291a00dd09ff2870410bd059");
+assert (Cstruct.equal (hmac_verify (base16_decode "aaa bbb ccc")) (base16_decode "b132b5cda3f0f84ea6bad8723eade941679c53de778d2bf1f97a1b5ec0256c76");
+assert (Cstruct.equal (hmac_verify (base16_decode "aaabbbccc")) (base16_decode "5cee70f6c77d10b65b0d0b1c20c7db7891786534df76c180965dc40eedeb33b9");
+assert (Cstruct.equal (hmac_verify (base16_decode (String.make 3 0))) (base16_decode "c0abbff504a2db4b2c52a1ff1af36785d4dc9619579dc2f10141c149de906ff6");
+
+assert (Cstruct.equal (hmac_mac (base16_decode "")) (base16_decode "796ff498cb2ab62b568f4e5c6657b24711a1bc516a6639559af0c3e67ed40149");
+assert (Cstruct.equal (hmac_mac (base16_decode "foobar")) (base16_decode "f54d5357308dc2ace62c226920ecab7dff8d162faf992d0497745b7da18a4d06");
+assert (Cstruct.equal (hmac_mac (base16_decode "aaa bbb ccc")) (base16_decode "c7f8db82993bdb9beb1ad8ea8267a76bb10cb5ed960077de350a48538435379f");
+assert (Cstruct.equal (hmac_mac (base16_decode "aaabbbccc")) (base16_decode "24389641b1edd9f569bf6d2570aeb6aabae1875c50f5c1ce66a5e21107139a31");
+assert (Cstruct.equal (hmac_verify (base16_decode (String.make 3 0))) (base16_decode "188504215739fca18d43fd06988d37ba8df17a5d47557d5379f76ebb2fb3b9e6");
+
 (* **************** *)
 (* A test where we don't control the server ntor priv key nor ephemeral priv key. Values were extracted from ntor_ref.py *)
-let server_id = cs_of_str (base16_decode "74686973697361746f726e6f646569642423255e") in
-let server_ntor_pubkey = cs_of_str (base16_decode "11e474752f5c59807d43f3362722acef7344463e110ac4219759e2ee5b76c470") in
+let server_id = base16_decode "74686973697361746f726e6f646569642423255e" in
+let server_ntor_pubkey = base16_decode "11e474752f5c59807d43f3362722acef7344463e110ac4219759e2ee5b76c470" in
 let test_client_ephemeral_key = base16_decode "d8d98204e6a5dabe1e86e4acb439be0200db7e7bb54012b4d58e0c7989d5ef72" in
 
-let (client_ephemeral_privkey, client_ephemeral_pubkey) = sec_pub_of_cs (cs_of_str test_client_ephemeral_key) in
-let test_client_ephemeral_pubkey = cs_of_str (base16_decode "b2bbe943016107e307bbf13c96047c47d4f48223e2d7a38d7f663bc906e56742" in
+let (client_ephemeral_privkey, client_ephemeral_pubkey) = sec_pub_of_cs test_client_ephemeral_key in
+let test_client_ephemeral_pubkey = base16_decode "b2bbe943016107e307bbf13c96047c47d4f48223e2d7a38d7f663bc906e56742" in
 assert (Cstruct.equal client_ephemeral_pubkey test_client_ephemeral_pubkey);
 
 (* payload is the handshake reply from a router *)

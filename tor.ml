@@ -344,8 +344,23 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let kX = my_pubkey in
                 let kB = ntor_onion_key in
 
+(*
+    let base16_decode str =
+      let fg = `Hex str in
+      Cstruct.of_string (Hex.to_string fg)
+    in
+    let sec_pub_of_cs cs = match Mirage_crypto_ec.X25519.secret_of_cs cs with
+      | Error _ -> assert false
+      | Ok (s, p) -> 
+        (s, p)
+    in
+    let payload = base16_decode "b11dfd0426546dc3ccd566bc044623071cfa6c0cdc5031f6e4d4726d5060ae064edda9c2bb8828b7c7b4451937a429a14a0d7c89c8a828f6e7f551f575069a87" in
+    let (x, kX) = sec_pub_of_cs (base16_decode "04e3c082528c10cdfae075d38f8d23c8127793d2426ad269260643f3dd1754e1") in
+    let kB      = base16_decode "ff4d8905ba8401757f3095a25141ae7724d6a5b1790db8460dec0c0df904582e" in
+    let nodeid  = base16_decode "49367166a01d6f33df01efc56467336dcdd47547" in
+    let cokm    = base16_decode "3750e6a4d5a696113c6e0546870ce65b233ed329ff8dc5b52f79ce73cb6d871e539372aa4024adab0d403e1de998433f28b1eeaafb1e9878bb49742c12c7230f73bc1125e2a5a78d" in
+*)
                 let kY = Cstruct.sub payload 0 32 in
-
                 let h_auth_expected = Cstruct.sub payload 32 32 in
 
                 let yx = match Mirage_crypto_ec.X25519.key_exchange x kY with
@@ -381,29 +396,19 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 ] in
 
                 let h_auth_input = Mirage_crypto.Hash.mac `SHA256 ~key:t_mac auth_input in
-
-                Log.info( fun f -> f "h_auth_expected is:");
-                Cstruct.hexdump h_auth_expected ;
-                Log.info( fun f -> f "h_auth_input is:");
-                Cstruct.hexdump h_auth_input ;
                 assert(Cstruct.equal h_auth_expected h_auth_input);
 
 (*
-then:
-   In RFC5869's vocabulary, this is HKDF-SHA256 with info == "ntor-curve25519-sha256-1:key_expand",
-   salt == "ntor-curve25519-sha256-1:key_extract", and IKM == secret_input.
-
-                let Df = HMAC_SHA256("ntor-curve25519-sha256-1:key_expand" | INT8(1) , KEY_SEED)
-                let Db = HMAC_SHA256(Df | "ntor-curve25519-sha256-1:key_expand" | INT8(2) , KEY_SEED)
-                let Kf = HMAC_SHA256(Db | "ntor-curve25519-sha256-1:key_expand" | INT8(3) , KEY_SEED)
-                let Kb = HMAC_SHA256(Kf | "ntor-curve25519-sha256-1:key_expand" | INT8(4) , KEY_SEED)
-                let KH =
+                then:
+                   In RFC5869's vocabulary, this is HKDF-SHA256 with info == "ntor-curve25519-sha256-1:key_expand",
+                   salt == "ntor-curve25519-sha256-1:key_extract", and IKM == secret_input.
 *)
-                let key_seed = Mirage_crypto.Hash.mac `SHA256 ~key:t_key secret_input in
+                (* let key_seed = Mirage_crypto.Hash.mac `SHA256 ~key:t_key secret_input in *)
 
-                (* TODO: use HKDF-SHA256 *)
-
-                Lwt.return cs
+                let cprk = Hkdf.extract ~hash:`SHA256 ~salt:t_key secret_input in
+                let cokm = Hkdf.expand ~hash:`SHA256 ~prk:cprk ~info:m_expand 72 in
+   
+                Lwt.return cokm
 
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
@@ -462,12 +467,14 @@ then:
 
                 send_cell tls (version circID) (negotiate_version tls circID) >>= fun _ ->
 
-                (* let second_node = List.hd (List.tl circuit.relay) in *)
                 let nodeid = Cstruct.of_string (Hex.to_string first_node.fingerprint) in
                 let ntor_onion_key = Cstruct.of_string first_node.ntor_onion_key in
 
                 let create2_pkt = create2 circID nodeid ntor_onion_key my_pubkey in
                 send_cell tls create2_pkt (extract_keys nodeid ntor_onion_key secret my_pubkey) >>= fun cs ->
+
+Logs.info(fun f -> f "df-kdf is:");
+    Cstruct.hexdump cs ;
 
                 let df = Cstruct.sub cs 0 hash_len in
                 let kf = Cstruct.sub cs (2*hash_len) key_len in
@@ -490,7 +497,7 @@ Log.info (fun m -> m "will extend nodes");
                         match Mirage_crypto_ec.Ed25519.priv_of_cstruct kf with
                         | Error _ -> Log.err (fun m -> m "Error with priv_of_cstruct"); assert false
                         | Ok kf ->
-                        extend_circuit tls circID secret my_pubkey(List.cons kf kf_list) df t
+                        extend_circuit tls circID secret my_pubkey (List.cons kf kf_list) df t
                 in
                 extend_circuit tls circID secret my_pubkey [kf] df (List.tl circuit.relay) >>= fun _kf_list ->
 Log.info (fun m -> m "then extend to exit");

@@ -47,12 +47,12 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             cell.padding ;
         ] in
         TLS.write tls buf >>= function
-        | Ok () -> Log.info(fun f -> f "send %s" (escape_data buf)); Lwt.return (Ok())
+        | Ok () -> Log.info(fun f -> f "sending:"); Cstruct.hexdump buf; Lwt.return (Ok())
         | Error e -> Log.info(fun f -> f "send err: %a" TLS.pp_write_error e); Lwt.return (Error e)
 
     let read tls =
         TLS.read tls >>= function
-        | Ok (`Data buf) -> Log.info(fun f -> f "recv %s" (escape_data buf)); Lwt.return (Ok buf)
+        | Ok (`Data buf) -> Log.info(fun f -> f "reading:"); Cstruct.hexdump buf; Lwt.return (Ok buf)
         | Ok `Eof -> Log.info(fun f -> f "recv eof"); Lwt.return (Ok Cstruct.empty)
         | Error e -> Log.info(fun f -> f "recv err: %a" TLS.pp_error e); Lwt.return (Error e)
 
@@ -285,20 +285,18 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let my_alen = ip_len_of_cstruct (Cstruct.get_uint8 payload 5) in
                 let my_aval = Cstruct.sub payload 6 my_alen in
 
-                let rec parse_my_addr n payload consumed_size addr =
+                let rec parse_router_addr n payload consumed_size addr =
                     match n with
                     | 0 ->
                         (consumed_size, addr)
                     | n ->
                         let _router_atype = Cstruct.get_uint8 payload 0 in
                         let router_alen = ip_len_of_cstruct (Cstruct.get_uint8 payload 1) in
-                        let router_aval = Cstruct.sub payload (2+router_alen) my_alen in
-                        parse_my_addr (n-1) (Cstruct.shift payload (2+router_alen)) (consumed_size+2+router_alen) (Cstruct.concat [addr ; router_aval])
+                        let router_aval = Cstruct.sub payload 2 router_alen in
+                        parse_router_addr (n-1) (Cstruct.shift payload (2+router_alen)) (consumed_size+2+router_alen) (Cstruct.concat [addr ; router_aval])
                 in
                 let n_router_addr = Cstruct.get_uint8 payload (6+my_alen) in
-                let (consumed_size, router_aval) = parse_my_addr n_router_addr (Cstruct.shift payload (6+my_alen+1)) 0 Cstruct.empty in
-                Logs.info ( fun f -> f "n_router_addr is %d" n_router_addr);
-                   Cstruct.hexdump router_aval;
+                let (consumed_size, router_aval) = parse_router_addr n_router_addr (Cstruct.shift payload (6+my_alen+1)) 0 Cstruct.empty in
 
                 (* for testing purpose, suppose we only have 1 IPv4 at the begining in router_aval... *)
                 write tls (netinfo circID my_aval (Cstruct.sub router_aval 0 4)) >>= fun _ ->
@@ -328,100 +326,23 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
           let len_payload = Cstruct.length payload in
           if len_payload < 3 then Lwt.return Cstruct.empty
           else begin
-            let _id = Cstruct.sub payload 0 2 in
+            let _circuit_id = Cstruct.sub payload 0 2 in
             let typ = tor_command_of_uint8 (Cstruct.get_uint8 payload 2) in
-            let payload = Cstruct.shift payload 3 in
+            let len = Cstruct.BE.get_uint16 payload 3 in
+            let payload = Cstruct.shift payload 5 in
             match typ with
             | CREATED2 ->
+                assert (len = 64);
                 let protoid   = "ntor-curve25519-sha256-1" in
                 let t_mac    = Cstruct.of_string (protoid ^ ":mac") in
                 let t_key     = Cstruct.of_string (protoid ^ ":key_extract") in
                 let t_verify = Cstruct.of_string (protoid ^ ":verify") in
                 let m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
 
-(* This is for testing purpose, and should be removed, just needed to verify that we compute the right thing *)
-(* ----------------- *)
-(*
-                let x  = to_cs "98 71 82 35 9d 3a c0 07 b1 f3 2b 51 a0 cd e9 ab 81 e6 d5 1e cc 91 e8 02 96 23 7a e9 43 53 d5 69" in
-                let (x, _) = match Mirage_crypto_ec.X25519.secret_of_cs x with
-                | Error _ -> assert false
-                | Ok k -> k
-                in
-                let nodeid = to_cs "61 62 63 64 65 66 6f 75 41 62 6f 75 74 53 74 61 69 72 73 2e" in 
-                let kB =     to_cs "81 99 d0 fe c5 ce 80 1b 0c 10 17 f9 99 0f c4 9e b9 b9 7a f7 a7 79 ef ec 7e 6b e8 f8 a5 65 a8 27" in 
-                let kX =     to_cs "0e b6 2f d1 a8 b7 c5 65 3d 05 e6 5e ae 2f 5d 77 75 20 11 3c bf 2f 06 50 08 f6 15 55 da 34 ca 7b" in 
-                let kY =     to_cs "64 87 b5 a7 d0 a3 02 d9 1f e4 ba 1a 17 56 ea 3c 83 e1 27 20 6f 03 53 a1 08 ef 26 14 e2 3e 54 27" in 
-
-                let yx = match Mirage_crypto_ec.X25519.key_exchange x kY with
-                | Error _ -> assert false
-                | Ok r -> r
-                in
-                let yx_expected = to_cs "12 86 ce 57 90 9b 30 ce 84 c3 48 b8 8d ec e0 01 50 c3 c4 4e ea 23 20 c0 7f cf 0d fe 8b 1b fa 10" in
-                assert (yx_expected = yx);
-
-                let bx = match Mirage_crypto_ec.X25519.key_exchange x kB with
-                | Error _ -> assert false
-                | Ok r -> r
-                in
-                let bx_expected = to_cs "0f 06 cd cf 9c 00 73 9e 32 71 53 b2 0d 80 1d 97 17 fb 3c e3 d7 b0 36 c9 7e 42 94 16 5d 12 85 3d" in 
-                assert (bx_expected = bx);
-
-                let secret_input = Cstruct.concat [
-                    yx ;
-                    bx ;
-                    nodeid ;
-                    kB ;
-                    kX ;
-                    kY ;
-                    Cstruct.of_string protoid ;
-                ] in
-
-                let secret_input_expected = to_cs "12 86 ce 57 90 9b 30 ce 84 c3 48 b8 8d ec e0 01 50 c3 c4 4e ea 23 20 c0 7f cf 0d fe 8b 1b fa 10 0f 06 cd cf 9c 00 73 9e 32 71 53 b2 0d 80 1d 97 17 fb 3c e3 d7 b0 36 c9 7e 42 94 16 5d 12 85 3d 61 62 63 64 65 66 6f 75 41 62 6f 75 74 53 74 61 69 72 73 2e 81 99 d0 fe c5 ce 80 1b 0c 10 17 f9 99 0f c4 9e b9 b9 7a f7 a7 79 ef ec 7e 6b e8 f8 a5 65 a8 27 0e b6 2f d1 a8 b7 c5 65 3d 05 e6 5e ae 2f 5d 77 75 20 11 3c bf 2f 06 50 08 f6 15 55 da 34 ca 7b 64 87 b5 a7 d0 a3 02 d9 1f e4 ba 1a 17 56 ea 3c 83 e1 27 20 6f 03 53 a1 08 ef 26 14 e2 3e 54 27 6e 74 6f 72 2d 63 75 72 76 65 32 35 35 31 39 2d 73 68 61 32 35 36 2d 31" in
-                assert (secret_input_expected = secret_input);
-
-                let verify = Mirage_crypto.Hash.mac `SHA256 ~key:t_verify secret_input in
-                let verify_expected = to_cs "af aa 0f 40 8e 63 ba 84 ab cd 2e 37 fc ab 51 88 a1 64 8b 1f 22 62 15 3c 9a 66 60 d0 c8 aa 7b 99" in
-                assert (verify_expected = verify);
-                
-                let auth_input = Cstruct.concat [
-                    verify ;
-                    nodeid ;
-                    kB ;
-                    kY ;
-                    kX ;
-                    Cstruct.of_string protoid ;
-                    Cstruct.of_string "Server" ;
-                ] in
-                let auth_input_expected = to_cs "af aa 0f 40 8e 63 ba 84 ab cd 2e 37 fc ab 51 88 a1 64 8b 1f 22 62 15 3c 9a 66 60 d0 c8 aa 7b 99 61 62 63 64 65 66 6f 75 41 62 6f 75 74 53 74 61 69 72 73 2e 81 99 d0 fe c5 ce 80 1b 0c 10 17 f9 99 0f c4 9e b9 b9 7a f7 a7 79 ef ec 7e 6b e8 f8 a5 65 a8 27 64 87 b5 a7 d0 a3 02 d9 1f e4 ba 1a 17 56 ea 3c 83 e1 27 20 6f 03 53 a1 08 ef 26 14 e2 3e 54 27 0e b6 2f d1 a8 b7 c5 65 3d 05 e6 5e ae 2f 5d 77 75 20 11 3c bf 2f 06 50 08 f6 15 55 da 34 ca 7b 6e 74 6f 72 2d 63 75 72 76 65 32 35 35 31 39 2d 73 68 61 32 35 36 2d 31 53 65 72 76 65 72" in
-                assert (auth_input_expected = auth_input);
-
-                let h_auth_input = Mirage_crypto.Hash.mac `SHA256 ~key:t_mac auth_input in
-                let h_auth_input_expected = to_cs "b6 cb eb ba ef d5 e5 f0 d0 7f 99 a0 eb 66 36 98 32 e1 8b e2 c0 13 f8 f8 2e 3c aa 58 9d d2 46 1a" in                
-                assert (h_auth_input = h_auth_input_expected);
-*)
-
-(*
-let nodeid = to_cs "74 68 69 73 69 73 61 74 6f 72 6e 6f 64 65 69 64 24 23 25 5e" in
-let kB =     to_cs "11 e4 74 75 2f 5c 59 80 7d 43 f3 36 27 22 ac ef 73 44 46 3e 11 0a c4 21 97 59 e2 ee 5b 76 c4 70" in
-let x =      to_cs "d8 d9 82 04 e6 a5 da be 1e 86 e4 ac b4 39 be 02 00 db 7e 7b b5 40 12 b4 d5 8e 0c 79 89 d5 ef 72" in
-let (x, xpub) = match Mirage_crypto_ec.X25519.secret_of_cs x with
-| Error _ -> assert false
-| Ok k -> k
-in
-let kX =      to_cs "b2 bb e9 43 01 61 07 e3 07 bb f1 3c 96 04 7c 47 d4 f4 82 23 e2 d7 a3 8d 7f 66 3b c9 06 e5 67 42" in
-assert(Cstruct.equal kX xpub);
-let payload = to_cs "59 27 28 8d b9 9d a8 67 96 2a cc f7 cb e9 91 b9 46 86 d8 f4 89 12 dc 1a a3 3f de 4b f3 bd aa 10 19 b5 4b 74 78 0c 9a a9 dd 50 7a 07 e3 7b ae 67 24 fa 5e 63 11 c6 86 e5 c6 35 2a a5 ad 52 60 e3" in
-*)
-
-(* ----------------- *)
-(* Here we can continue as usual, H and EXP are the good ones... *)
-
                 Log.info (fun m -> m "CREATED2 received...");
                 let x = secret in
                 let kX = my_pubkey in
                 let kB = ntor_onion_key in
-Cstruct.hexdump kB;
-Cstruct.hexdump nodeid;
 
                 let kY = Cstruct.sub payload 0 32 in
 
@@ -465,9 +386,8 @@ Cstruct.hexdump nodeid;
                 Cstruct.hexdump h_auth_expected ;
                 Log.info( fun f -> f "h_auth_input is:");
                 Cstruct.hexdump h_auth_input ;
-                assert(Cstruct.equal   h_auth_expected h_auth_input);
+                assert(Cstruct.equal h_auth_expected h_auth_input);
 
-                let key_seed = Mirage_crypto.Hash.mac `SHA256 ~key:t_key secret_input in
 (*
                 let verify = HMAC_SHA256(secret_input, "ntor-curve25519-sha256-1:verify")
                 let auth_input = verify | id | ntor_onion_key | server_pub_key | client_pub_key | "ntor-curve25519-sha256-1" | "Server"
@@ -484,18 +404,10 @@ then:
                 let Kb = HMAC_SHA256(Kf | "ntor-curve25519-sha256-1:key_expand" | INT8(4) , KEY_SEED)
                 let KH =
 *)
-                let k1 = Mirage_crypto.Hash.mac `SHA256 ~key:key_seed (Cstruct.concat [m_expand; uint8_to_cs 1]) in
-                let k2 = Mirage_crypto.Hash.mac `SHA256 ~key:key_seed (Cstruct.concat [k1 ; m_expand; uint8_to_cs 2]) in
-                let k3 = Mirage_crypto.Hash.mac `SHA256 ~key:key_seed (Cstruct.concat [k2 ; m_expand; uint8_to_cs 3]) in
-                let k4 = Mirage_crypto.Hash.mac `SHA256 ~key:key_seed (Cstruct.concat [k3 ; m_expand; uint8_to_cs 4]) in
-                let k = Cstruct.concat [ k1 ; k2 ; k3 ; k4 ] in
+                let key_seed = Mirage_crypto.Hash.mac `SHA256 ~key:t_key secret_input in
 
-                let df = Cstruct.sub k 0 hash_len in
-                let db = Cstruct.sub k (2*hash_len) hash_len in
-                let kf = Cstruct.sub k (2*hash_len) key_len in
-                let kb = Cstruct.sub k (2*hash_len+key_len) key_len in
+                (* TODO: use HKDF-SHA256 *)
 
-                let cs = Cstruct.concat [df ; db ; kf ; kb] in
                 Lwt.return cs
 
             | DESTROY ->
@@ -526,7 +438,7 @@ then:
       6. For each subsequent onion router R (R_2 through R_N), extend
          the circuit to R.
 *)
-    let connect_circuit stack circuit _g =
+    let connect_circuit stack circuit g =
         (* TODO: if circuit.relay is empty, only use the exit node... *)
         (* 3. *)
         let first_node = List.hd circuit.relay in
@@ -549,16 +461,8 @@ then:
                 Log.info (fun m -> m "established TLS connection to %a:%d"
                       Ipaddr.pp first_node.ip_addr first_node.port);
         (* 4 & 5. *)
-                (* let (secret, my_pubkey) = Mirage_crypto_ec.X25519.gen_key ~g () in *)
-let x =      to_cs "d8 d9 82 04 e6 a5 da be 1e 86 e4 ac b4 39 be 02 00 db 7e 7b b5 40 12 b4 d5 8e 0c 79 89 d5 ef 72" in
-let (secret, my_pubkey) = match Mirage_crypto_ec.X25519.secret_of_cs x with
-| Error _ -> assert false
-| Ok k -> k
-in
-let kX =      to_cs "b2 bb e9 43 01 61 07 e3 07 bb f1 3c 96 04 7c 47 d4 f4 82 23 e2 d7 a3 8d 7f 66 3b c9 06 e5 67 42" in
-assert(Cstruct.equal kX my_pubkey);
-
-                let circID = 1024 in
+                let (secret, my_pubkey) = Mirage_crypto_ec.X25519.gen_key ~g () in
+                let circID = 1024 in (* TODO: chose at random, and not already used with this router *)
                 (* assert circID <> 0 and was never used with the first node *)
 
                 send_cell tls (version circID) (negotiate_version tls circID) >>= fun _ ->

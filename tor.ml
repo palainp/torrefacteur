@@ -153,7 +153,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             uint8_to_cs 1 ;                   (* NSPEC *)
             uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
             uint8_to_cs 6 ;
-            uint32_to_cs (Ipaddr.to_int32 next_relay.ip_addr) ;
+            Cstruct.of_string (Ipaddr.to_string next_relay.ip_addr) ;
             uint16_to_cs (next_relay.port) ;
         ] in
         let extend2_payload = Cstruct.concat [
@@ -169,9 +169,11 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             uint32_to_cs 0l ;   (* ! TODO: digest ! *)
             uint16_to_cs len ;
             extend2_payload ;
-            Cstruct.make 4 '\000' ; (* Implementations SHOULD fill this field with four zero-valued bytes *)
-            Cstruct.create (payload_len-11-len-2) ;
+            Cstruct.create 4 ; (* Implementations SHOULD fill this field with four zero-valued bytes *)
+            Cstruct.create (payload_len-11-len-4) ; (* This should be randomized *)
         ] in
+    Logs.info(fun f -> f "extend2 payload is:");
+    Cstruct.hexdump payload;
         let updated_digest = Cstruct.sub (Cstruct.concat [ last_df ; payload ]) 0 4 in
         let payload = Cstruct.concat [
             (* 6.1. Relay cells *)
@@ -489,9 +491,9 @@ Logs.info(fun f -> f "df-kdf is:");
     Cstruct.hexdump cs ;
 
                 let df = Cstruct.sub cs 0 hash_len in
-                let db = Cstruct.sub cs hash_len hash_len in
+                (* let db = Cstruct.sub cs hash_len hash_len in *)
                 let kf = Cstruct.sub cs (2*hash_len) key_len in
-                let kb = Cstruct.sub cs (2*hash_len+key_len) key_len in
+                (* let kb = Cstruct.sub cs (2*hash_len+key_len) key_len in *)
 
                 match Mirage_crypto_ec.Ed25519.priv_of_cstruct kf with
                 | Error _ -> assert false

@@ -315,12 +315,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
       in
       proceed_next tls circID payload
 
-    let to_cs s =
-      let line = String.split_on_char ' ' s in
-      let c = String.concat "" line in
-      let fg = `Hex c in
-      Cstruct.of_string (Hex.to_string fg)
-
     let extract_keys nodeid ntor_onion_key secret my_pubkey payload =
       let rec proceed_next payload nodeid ntor_onion_key secret my_pubkey =
           let len_payload = Cstruct.length payload in
@@ -339,6 +333,12 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let t_verify = Cstruct.of_string (protoid ^ ":verify") in
                 let m_expand  = Cstruct.of_string (protoid ^ ":key_expand") in
 
+(*
+                let verify = HMAC_SHA256(secret_input, "ntor-curve25519-sha256-1:verify")
+                let auth_input = verify | id | ntor_onion_key | server_pub_key | client_pub_key | "ntor-curve25519-sha256-1" | "Server"
+
+     assert auth = HMAC_SHA256(auth_input, "ntor-curve25519-sha256-1:mac")
+*)
                 Log.info (fun m -> m "CREATED2 received...");
                 let x = secret in
                 let kX = my_pubkey in
@@ -389,11 +389,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 assert(Cstruct.equal h_auth_expected h_auth_input);
 
 (*
-                let verify = HMAC_SHA256(secret_input, "ntor-curve25519-sha256-1:verify")
-                let auth_input = verify | id | ntor_onion_key | server_pub_key | client_pub_key | "ntor-curve25519-sha256-1" | "Server"
-
-     assert auth = HMAC_SHA256(auth_input, "ntor-curve25519-sha256-1:mac")
-
 then:
    In RFC5869's vocabulary, this is HKDF-SHA256 with info == "ntor-curve25519-sha256-1:key_expand",
    salt == "ntor-curve25519-sha256-1:key_extract", and IKM == secret_input.

@@ -9,6 +9,8 @@ let main =
     ~packages:[
       package "duration" ;
       package "ethernet";
+      package "mirage-crypto";
+      package "digestif";
       package ~min:"6.0.0" "mirage-protocols";
       package ~min:"5.1.1" "conduit";
       package "cohttp-mirage";

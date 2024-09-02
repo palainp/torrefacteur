@@ -152,7 +152,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             uint32_to_cs 0l ;     (* digest placeholder *)
             uint16_to_cs len ;
             payload ;
-            Cstruct.create (payload_len-11-len) ;
+            Cstruct.create (payload_len-11-len) ; (* Could be an issue to be only zeroes? *)
         ] in
 
         (* update the digest *)
@@ -162,7 +162,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
 
         (* encrypt the payload and create the cell *)
         let payload_encrypted = Mirage_crypto.Cipher_block.AES.CTR.encrypt ~key:kf.key ~ctr:kf.ctr payload in
-        df_ctx, create_packet circID RELAY_EARLY payload_encrypted ~padding:true ~random_padding:true 
+        df_ctx, create_packet circID RELAY payload_encrypted ~padding:false (* we already padded for the digest calculation *)
 
 (*
 5.3. Creating circuits
@@ -484,8 +484,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let df_ctx, _db_ctx, kf, _kb = extract_ctx cs in
 
         (* 6. *)
-                let (secret, my_pubkey) = Mirage_crypto_ec.X25519.gen_key ~g () in
-                let new_circID = 1025 in (* TODO: chose at random, and not already used with this router *)
+                (* let (secret, my_pubkey) = Mirage_crypto_ec.X25519.gen_key ~g () in *)
 
 (* To extend the circuit by a single onion router R_M, the OP performs
    these steps:
@@ -498,10 +497,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let nodeport = second_node.port in
 Log.info (fun m -> m "will extend to %a:%d" Ipaddr.pp nodeip nodeport);
                 let ntor_onion_key = Cstruct.of_string second_node.ntor_onion_key in
-                let _relaypub = second_node.public_onion_key in
-                let create2_cell = create2 new_circID nodeid ntor_onion_key my_pubkey in
-
-                (* let payload = Mirage_crypto_pk.Rsa.encrypt ~key:relaypub create2_cell.payload in *)
+                let create2_cell = create2 (*not_used*)circID nodeid ntor_onion_key my_pubkey in
 
 (*
       [00] TLS-over-TCP, IPv4 address
@@ -522,17 +518,19 @@ Log.info (fun m -> m "will extend to %a:%d" Ipaddr.pp nodeip nodeport);
                     uint8_to_cs 2 ;                   (* NSPEC *)
                     uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
                     uint8_to_cs 6 ;
-                    Cstruct.of_string (Ipaddr.to_string nodeip) ;
+                    Cstruct.of_string (Ipaddr.to_octets nodeip) ;
                     uint16_to_cs (nodeport) ;
-                    uint8_to_cs 3 ;                   (* [03] Ed25519 identity *)
-                    uint8_to_cs (Cstruct.length ntor_onion_key) ;
-                    ntor_onion_key ;
+                    uint8_to_cs 2 ;                   (* [02] Legacy identity *)
+                    uint8_to_cs (Cstruct.length nodeid) ;
+                    nodeid ;
                 ] in
                 let extend2_payload = Cstruct.concat [
                     specs ;
                     create2_cell.payload ;
                 ] in
+                Cstruct.hexdump extend2_payload ;
                 let _df_ctx, extend2_pkt = extend2 circID kf df_ctx extend2_payload in
+                (* here we must use the nodeid and ntor_onion_key of the second router... *)
                 send_cell tls extend2_pkt (extract_keys nodeid ntor_onion_key secret my_pubkey) >>= fun cs ->
                 Cstruct.hexdump cs ;
 

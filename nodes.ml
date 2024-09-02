@@ -149,6 +149,7 @@ module Relay = struct
             | [] -> ([], "") (* this is an unterminated key... *)
         in
         let rec read_entries db acc =
+
             match db with
             | s::db ->
                 if ( String.starts_with ~prefix:"router " s ) then begin (* a new id, beware! router-sig* also exists, thus checks for "router " *)

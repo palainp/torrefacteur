@@ -136,34 +136,6 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         let payload = handshake_client nodeid ntor_onion_key my_pubkey in
         create_packet circID CREATE2 payload ~padding:true
 
-
-    (* 5.1.2. EXTEND and EXTENDED *
-       6.1. Relay cells *)
-    (* extend the circuit to the next onion router, returns the updated outbound digest and the cell*)
-    let extend2 : Int.t -> key_ctx -> Digestif.SHA1.ctx -> Cstruct.t -> Digestif.SHA1.ctx * cell =
-    fun circID kf df_ctx payload ->
-        (* create the payload with a digest placeholder *)
-        let len = Cstruct.length payload in
-        let payload = Cstruct.concat [
-            (* 6.1. Relay cells *)
-            uint8_to_cs (tor_relay_command_to_uint8 RELAY_EXTEND2) ;
-            uint16_to_cs 0 ;     (* 'recognized' *)
-            uint16_to_cs circID ;
-            uint32_to_cs 0l ;     (* digest placeholder *)
-            uint16_to_cs len ;
-            payload ;
-            Cstruct.create (payload_len-11-len) ; (* Could be an issue to be only zeroes? *)
-        ] in
-
-        (* update the digest *)
-        let df_ctx = Digestif.SHA1.feed_string df_ctx (Cstruct.to_string payload) in
-        let digest_update = Digestif.SHA1.to_raw_string (Digestif.SHA1.get df_ctx) in
-        Cstruct.blit_from_string digest_update 0 payload (1+2+2) 4 ;
-
-        (* encrypt the payload and create the cell *)
-        let payload_encrypted = Mirage_crypto.Cipher_block.AES.CTR.encrypt ~key:kf.key ~ctr:kf.ctr payload in
-        df_ctx, create_packet circID RELAY payload_encrypted ~padding:false (* we already padded for the digest calculation *)
-
 (*
 5.3. Creating circuits
 
@@ -429,6 +401,65 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
       {key = Mirage_crypto.Cipher_block.AES.CTR.of_secret kf; ctr = Mirage_crypto.Cipher_block.AES.CTR.ctr_of_cstruct (Cstruct.create 16)},
       {key = Mirage_crypto.Cipher_block.AES.CTR.of_secret kb; ctr = Mirage_crypto.Cipher_block.AES.CTR.ctr_of_cstruct (Cstruct.create 16)}
 
+
+
+
+    (* 5.1.2. EXTEND and EXTENDED *
+       6.1. Relay cells *)
+    (* extend the circuit to the next onion router, returns the updated outbound digest and the cell*)
+    let extend2 : Int.t -> key_ctx -> Digestif.SHA1.ctx -> Cstruct.t -> Digestif.SHA1.ctx * cell =
+    fun circID kf df_ctx payload ->
+(*
+   The payload of each unencrypted RELAY cell consists of:
+
+         Relay command           [1 byte]
+         'Recognized'            [2 bytes]
+         StreamID                [2 bytes]
+         Digest                  [4 bytes]
+         Length                  [2 bytes]
+         Data                    [Length bytes]
+         Padding                 [PAYLOAD_LEN - 11 - Length bytes]
+*)
+
+        (* create the payload with a digest placeholder *)
+        (*    The 'Padding' field is used to make relay cell contents unpredictable, to
+              avoid certain attacks (see proposal 289 for rationale). Implementations
+              SHOULD fill this field with four zero-valued bytes, followed by as many
+              random bytes as will fit.  (If there are fewer than 4 bytes for padding,
+              then they should all be filled with zero.
+        *)
+        let len = Cstruct.length payload in
+        let payload = Cstruct.concat [
+            (* 6.1. Relay cells *)
+            uint8_to_cs (tor_relay_command_to_uint8 RELAY_EXTEND2) ;
+            uint16_to_cs 0 ;     (* 'recognized' *)
+            uint16_to_cs circID ;
+            uint32_to_cs 0l ;    (* digest placeholder *)
+            uint16_to_cs len ;
+            payload ;
+            Cstruct.create 4 ; (* 4B 0s*)
+            random_cs ~len:(payload_len-11-len-4) () ;
+        ] in
+
+        (* update the digest *)
+        let df_ctx = Digestif.SHA1.feed_string df_ctx (Cstruct.to_string payload) in
+        let digest_update = Digestif.SHA1.to_raw_string (Digestif.SHA1.get df_ctx) in
+        (* Note: if the digest is wrong (e.g. let digest_update = "1234" in), I have DESTROY:PROTOCOL,
+        so if should be the right *)
+        Cstruct.blit_from_string digest_update 0 payload (1+2+2) 4 ;
+
+        (* encrypt the payload and create the cell *)
+        let payload_encrypted = Mirage_crypto.Cipher_block.AES.CTR.encrypt ~key:kf.key ~ctr:kf.ctr payload in
+        (* Note: if the encryption is wrong (e.g let payload_encrypted = payload in) I have DESTROY:PROTOCOL,
+        so if should be the right *)
+        (* Note: here RELAY or RELAY_EARLY does not changed anything... *)
+        df_ctx, create_packet circID RELAY payload_encrypted ~padding:false (* already padded for the digest computation *)
+
+(* Note: With that payload I receive DESTROY:FINISHED after some times, so maybe the first router correctly decrypts
+the payload, and correctly sends a CREATE2 cell (or timeout?) but something is still wrong *)
+
+
+
 (*
       3. If not already connected to the first router in the chain,
          open a new connection to that router.
@@ -496,39 +527,52 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let nodeip = second_node.ip_addr in
                 let nodeport = second_node.port in
 Log.info (fun m -> m "will extend to %a:%d" Ipaddr.pp nodeip nodeport);
+(* Yes, the informations are correct :)
+Cstruct.hexdump nodeid ;
+let key_encoded = begin match Base64.encode ~pad:false second_node.ntor_onion_key with
+                      | Error (`Msg _) ->
+                        ""
+                      | Ok k -> k
+                    end in
+Log.info(fun m -> m "ntor-key %s" key_encoded);
+*)
                 let ntor_onion_key = Cstruct.of_string second_node.ntor_onion_key in
-                let create2_cell = create2 (*not_used*)circID nodeid ntor_onion_key my_pubkey in
+(*
+                [00] TLS-over-TCP, IPv4 address
+                     A four-byte IPv4 address plus two-byte ORPort
+                [01] TLS-over-TCP, IPv6 address
+                     A sixteen-byte IPv6 address plus two-byte ORPort
+                [02] Legacy identity
+                     A 20-byte SHA1 identity fingerprint. At most one may be listed.
+                [03] Ed25519 identity
+                     A 32-byte Ed25519 identity fingerprint. At most one may
+                     be listed.
+          
+                For purposes of indistinguishability, implementations SHOULD send
+                   these link specifiers, if using them, in this order: [00], [02], [03],
+                   [01].
+*)
+                let extend2_payload = Cstruct.concat [
+                    uint8_to_cs 2 ;                   (* NSPEC *)
+                      uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
+                        uint8_to_cs 6 ;
+                        Cstruct.of_string (Ipaddr.to_octets nodeip) ;
+                        uint16_to_cs nodeport ;
+                      uint8_to_cs 2 ;                   (* [02] Legacy identity *)
+                        uint8_to_cs (Cstruct.length nodeid) ;
+                        nodeid ;
+                    (* the create2 handshake that will be forwarded *)
+                    handshake_client nodeid ntor_onion_key my_pubkey ;
+                ] in
 
 (*
-      [00] TLS-over-TCP, IPv4 address
-           A four-byte IPv4 address plus two-byte ORPort
-      [01] TLS-over-TCP, IPv6 address
-           A sixteen-byte IPv6 address plus two-byte ORPort
-      [02] Legacy identity
-           A 20-byte SHA1 identity fingerprint. At most one may be listed.
-      [03] Ed25519 identity
-           A 32-byte Ed25519 identity fingerprint. At most one may
-           be listed.
-
-      For purposes of indistinguishability, implementations SHOULD send
-         these link specifiers, if using them, in this order: [00], [02], [03],
-         [01].
+   When a relay cell is sent from an OP, the OP encrypts the payload
+   with the stream cipher as follows:
+      OP sends relay cell: (in test case, N=1 for the time being)
+         For I=N...1, where N is the destination node:
+            Encrypt with Kf_I.
+         Transmit the encrypted cell to node 1.
 *)
-                let specs = Cstruct.concat [
-                    uint8_to_cs 2 ;                   (* NSPEC *)
-                    uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
-                    uint8_to_cs 6 ;
-                    Cstruct.of_string (Ipaddr.to_octets nodeip) ;
-                    uint16_to_cs (nodeport) ;
-                    uint8_to_cs 2 ;                   (* [02] Legacy identity *)
-                    uint8_to_cs (Cstruct.length nodeid) ;
-                    nodeid ;
-                ] in
-                let extend2_payload = Cstruct.concat [
-                    specs ;
-                    create2_cell.payload ;
-                ] in
-                Cstruct.hexdump extend2_payload ;
                 let _df_ctx, extend2_pkt = extend2 circID kf df_ctx extend2_payload in
                 (* here we must use the nodeid and ntor_onion_key of the second router... *)
                 send_cell tls extend2_pkt (extract_keys nodeid ntor_onion_key secret my_pubkey) >>= fun cs ->

@@ -382,7 +382,13 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
       in
       proceed_next payload nodeid ntor_onion_key secret my_pubkey
 
-
+(*
+   When used in the ntor handshake, the first HASH_LEN bytes form the
+   forward digest Df; the next HASH_LEN form the backward digest Db; the
+   next KEY_LEN form Kf, the next KEY_LEN form Kb, and the final
+   DIGEST_LEN bytes are taken as a nonce to use in the place of KH in the
+   hidden service protocol.  Excess bytes from K are discarded.
+*)
     let extract_ctx cs =
       let df, cs = Cstruct.split cs hash_len in
       let db, cs = Cstruct.split cs hash_len in

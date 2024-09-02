@@ -501,14 +501,32 @@ Log.info (fun m -> m "will extend to %a:%d" Ipaddr.pp nodeip nodeport);
                 let _relaypub = second_node.public_onion_key in
                 let create2_cell = create2 new_circID nodeid ntor_onion_key my_pubkey in
 
-                (* let payload = Mirage_crypto_pk.Rsa.encrypt ~key:relaypub create2_cell in *)
+                (* let payload = Mirage_crypto_pk.Rsa.encrypt ~key:relaypub create2_cell.payload in *)
 
+(*
+      [00] TLS-over-TCP, IPv4 address
+           A four-byte IPv4 address plus two-byte ORPort
+      [01] TLS-over-TCP, IPv6 address
+           A sixteen-byte IPv6 address plus two-byte ORPort
+      [02] Legacy identity
+           A 20-byte SHA1 identity fingerprint. At most one may be listed.
+      [03] Ed25519 identity
+           A 32-byte Ed25519 identity fingerprint. At most one may
+           be listed.
+
+      For purposes of indistinguishability, implementations SHOULD send
+         these link specifiers, if using them, in this order: [00], [02], [03],
+         [01].
+*)
                 let specs = Cstruct.concat [
-                    uint8_to_cs 1 ;                   (* NSPEC *)
+                    uint8_to_cs 2 ;                   (* NSPEC *)
                     uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
                     uint8_to_cs 6 ;
                     Cstruct.of_string (Ipaddr.to_string nodeip) ;
                     uint16_to_cs (nodeport) ;
+                    uint8_to_cs 3 ;                   (* [03] Ed25519 identity *)
+                    uint8_to_cs (Cstruct.length ntor_onion_key) ;
+                    ntor_onion_key ;
                 ] in
                 let extend2_payload = Cstruct.concat [
                     specs ;

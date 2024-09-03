@@ -232,7 +232,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let ip_len_of_cstruct v =
                     match v with
                         | 4 -> 4
-                        | 6 | 16 -> 16
+                        | 6 -> 16
                         | _ -> Log.err (fun m -> m "Unexpected value when reading the IP addr size (%d)" v); 0
                 in
                 let _timestamp = Cstruct.BE.get_uint32 payload 0 in
@@ -459,7 +459,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         (* Note: if the encryption is wrong (e.g let payload_encrypted = payload in) I have DESTROY:PROTOCOL,
         so if should be the right *)
         (* Note: here RELAY or RELAY_EARLY does not changed anything... *)
-        df_ctx, create_packet circID RELAY payload_encrypted ~padding:false (* already padded for the digest computation *)
+        df_ctx, create_packet circID RELAY_EARLY payload_encrypted ~padding:false (* already padded for the digest computation *)
 
 (* Note: With that payload I receive DESTROY:FINISHED after some times, so maybe the first router correctly decrypts
 the payload, and correctly sends a CREATE2 cell (or timeout?) but something is still wrong *)
@@ -543,6 +543,7 @@ let key_encoded = begin match Base64.encode ~pad:false second_node.ntor_onion_ke
 Log.info(fun m -> m "ntor-key %s" key_encoded);
 *)
                 let ntor_onion_key = Cstruct.of_string second_node.ntor_onion_key in
+                let onion_pk = Cstruct.of_string second_node.identity_ed25519 in
 (*
                 [00] TLS-over-TCP, IPv4 address
                      A four-byte IPv4 address plus two-byte ORPort
@@ -558,8 +559,10 @@ Log.info(fun m -> m "ntor-key %s" key_encoded);
                    these link specifiers, if using them, in this order: [00], [02], [03],
                    [01].
 *)
+                assert (Cstruct.length onion_pk = 32);
+
                 let extend2_payload = Cstruct.concat [
-                    uint8_to_cs 2 ;                   (* NSPEC *)
+                    uint8_to_cs 3 ;                   (* NSPEC *)
                       uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
                         uint8_to_cs 6 ;
                         Cstruct.of_string (Ipaddr.to_octets nodeip) ;
@@ -567,10 +570,12 @@ Log.info(fun m -> m "ntor-key %s" key_encoded);
                       uint8_to_cs 2 ;                   (* [02] Legacy identity *)
                         uint8_to_cs (Cstruct.length nodeid) ;
                         nodeid ;
+                      uint8_to_cs 3 ;                   (* [03] Ed25519 identity *)
+                        uint8_to_cs 32 ;
+                        onion_pk ;
                     (* the create2 handshake that will be forwarded *)
                     handshake_client nodeid ntor_onion_key my_pubkey ;
                 ] in
-
 (*
    When a relay cell is sent from an OP, the OP encrypts the payload
    with the stream cipher as follows:

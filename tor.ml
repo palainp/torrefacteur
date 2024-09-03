@@ -543,7 +543,7 @@ let key_encoded = begin match Base64.encode ~pad:false second_node.ntor_onion_ke
 Log.info(fun m -> m "ntor-key %s" key_encoded);
 *)
                 let ntor_onion_key = Cstruct.of_string second_node.ntor_onion_key in
-                let onion_pk = Cstruct.of_string second_node.identity_ed25519 in
+                let onion_id_ed25519 = Cstruct.of_string second_node.identity_ed25519 in
 (*
                 [00] TLS-over-TCP, IPv4 address
                      A four-byte IPv4 address plus two-byte ORPort
@@ -559,7 +559,8 @@ Log.info(fun m -> m "ntor-key %s" key_encoded);
                    these link specifiers, if using them, in this order: [00], [02], [03],
                    [01].
 *)
-                assert (Cstruct.length onion_pk = 32);
+                assert (Cstruct.length onion_id_ed25519 = 32) ;
+                assert (Cstruct.length nodeid = 20) ;
 
                 let extend2_payload = Cstruct.concat [
                     uint8_to_cs 3 ;                   (* NSPEC *)
@@ -568,11 +569,11 @@ Log.info(fun m -> m "ntor-key %s" key_encoded);
                         Cstruct.of_string (Ipaddr.to_octets nodeip) ;
                         uint16_to_cs nodeport ;
                       uint8_to_cs 2 ;                   (* [02] Legacy identity *)
-                        uint8_to_cs (Cstruct.length nodeid) ;
+                        uint8_to_cs 20 ;
                         nodeid ;
                       uint8_to_cs 3 ;                   (* [03] Ed25519 identity *)
                         uint8_to_cs 32 ;
-                        onion_pk ;
+                        onion_id_ed25519 ;
                     (* the create2 handshake that will be forwarded *)
                     handshake_client nodeid ntor_onion_key my_pubkey ;
                 ] in

@@ -65,15 +65,17 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
 
     let cell_of_cs : Cstruct.t -> cell =
     fun data ->
-        assert (Cstruct.length data >= 3) ;
-        let circID = Cstruct.BE.get_uint16 data 0 in
-        let command = tor_command_of_uint8 (Cstruct.get_uint8 data 2) in
-        let payload = Cstruct.shift data 3 in
-        { circID ; command ; payload ; Cstruct.empty }
+        (* assert (Cstruct.length data >= 3) ; *)
+        if Cstruct.length data >= 3 then
+            let id = Cstruct.BE.get_uint16 data 0 in
+            let command = tor_command_of_uint8 (Cstruct.get_uint8 data 2) in
+            let payload = Cstruct.shift data 3 in
+            { circID = id ; command ; payload ; }
+        else { circID = 0 ; command = MUST_BE_DROP ; payload = Cstruct.empty ; }
 
     let write tls cell =
         TLS.write tls (cell_to_cs cell) >>= function
-        | Ok () -> Log.info(fun f -> f "sending:"); Cstruct.hexdump buf; Lwt.return (Ok())
+        | Ok () -> Log.info(fun f -> f "sending:"); Cstruct.hexdump cell.payload; Lwt.return (Ok())
         | Error e -> Log.info(fun f -> f "send err: %a" TLS.pp_write_error e); Lwt.return (Error e)
 
     let read tls =
@@ -89,7 +91,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         | Error e ->
             Log.err (fun m -> m "error %a while receiving packets" TLS.pp_error e ) ;
             assert false
-        | Ok data -> cell_of_payload data
+        | Ok data -> Lwt.return (cell_of_cs data)
 (*
    When a relay cell is sent from an OP, the OP encrypts the payload
    with the stream cipher as follows:
@@ -98,20 +100,23 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             Encrypt with Kf_I.
          Transmit the encrypted cell to node 1.
 *)
-    (* WARNING: to works correctly, the keys should be in reverse order *)
+    (* WARNING: to works correctly, the keys should be in !reverse circuit! order *)
     let rec encrypt_cell cell = function
         | [] -> cell
         | k::t ->
             (* encrypt the payload and create the cell *)
             let payload_encrypted = Mirage_crypto.Cipher_block.AES.CTR.encrypt ~key:k.key ~ctr:k.ctr cell.payload in
             assert (Cstruct.length payload_encrypted = Cstruct.length cell.payload) ;
-            encrypt_cell {cell with payload=payload_encrypted}
+            encrypt_cell {cell with payload=payload_encrypted} t
                     
     (* Take a cell and gives the decrypted payload *)
-    let rec decrypt_cell cell k =
-        let payload_decrypted = Mirage_crypto.Cipher_block.AES.CTR.decrypt ~key:k.key ~ctr:k.ctr cell.payload in
-        assert (Cstruct.length payload_decrypted = Cstruct.length cell.payload) ;
-        payload_decrypted
+    (* WARNING: to works correctly, the keys should be in !circuit! order *)
+    let rec decrypt_cell cell = function
+        | [] -> cell
+        | k::t ->
+            let payload_decrypted = Mirage_crypto.Cipher_block.AES.CTR.decrypt ~key:k.key ~ctr:k.ctr cell.payload in
+            assert (Cstruct.length payload_decrypted = Cstruct.length cell.payload) ;
+            decrypt_cell {cell with payload = payload_decrypted} t
 
     let random_cs ?(len = Random.int 128) () =
         let cs = Cstruct.create len in
@@ -125,7 +130,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             uint16_to_cs 2 ;                 (* length of the packet, specific to the versions packet *)
             uint16_to_cs 3 ;                 (* claims to be a version 3 client only *)
         ] in
-        create_packet circID VERSIONS v ~padding:false
+        new_cell circID VERSIONS v ~padding:false
 
     (* NETINFO is a fixed len packet => do not add the len size right after the command field *)
     let netinfo circID my_addr router_addr =
@@ -139,7 +144,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             uint8_to_cs 4 ; (* ALEN = 4 for IPv4 *)
         	my_addr ;
         ] in
-        create_packet circID NETINFO payload ~padding:true
+        new_cell circID NETINFO payload ~padding:true
 
     let handshake_client nodeid ntor_onion_key my_pubkey =
         let hdata = Cstruct.concat [
@@ -157,7 +162,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
     (* CREATE2 is a fixed len packet => do not add the len size after the command field *)
     let create2 circID nodeid ntor_onion_key my_pubkey =
         let payload = handshake_client nodeid ntor_onion_key my_pubkey in
-        create_packet circID CREATE2 payload ~padding:true
+        new_cell circID CREATE2 payload ~padding:true
 
 (*
 5.3. Creating circuits
@@ -196,7 +201,10 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
 
     let negotiate_version tls cell =
       let rec proceed_next tls cell =
-            let payload = cell.payload in
+        let payload = cell.payload in
+        if Cstruct.length payload < 3 then
+            Lwt.return_unit
+        else begin
             match cell.command with
             (* Variable sized commands always start with the length (2 bytes):
                let len = Cstruct.BE.get_uint16 payload 0 in
@@ -206,7 +214,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 Log.info (fun m -> m "VERSIONS received...");
                 let len = Cstruct.BE.get_uint16 payload 0 in
                 let _versions = Cstruct.sub payload 2 len in
-                proceed_next tls (cell_of_payload (Cstruct.shift payload (2+len)))
+                proceed_next tls (cell_of_cs (Cstruct.shift payload (2+len)))
 
             | CERTS ->
                 Log.info (fun m -> m "CERTS received...");
@@ -224,7 +232,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 in
                 let consumed_size = parse_certs ncerts (Cstruct.shift payload 3) 0 in
                 assert(1+consumed_size = len); (* adds 1B for the number of certs *)
-                proceed_next tls (cell_of_payload (Cstruct.shift payload (2+len)))
+                proceed_next tls (cell_of_cs (Cstruct.shift payload (2+len)))
 
             | AUTH_CHALLENGE ->
                 Log.info (fun m -> m "AUTH_CHALLENGE received...");
@@ -241,7 +249,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 in
                 let consumed_size = parse_methods n_methods (Cstruct.shift payload 8) 0 in
                 assert(32+2+consumed_size = len); (* adds 32+2B for the header *)
-                proceed_next tls (cell_of_payload (Cstruct.shift payload (2+len)))
+                proceed_next tls (cell_of_cs (Cstruct.shift payload (2+len)))
 
             | NETINFO ->
                 Log.info (fun m -> m "NETINFO received...");
@@ -249,7 +257,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let ip_len_of_cstruct v =
                     match v with
                         | 4 -> 4
-                        | 6 -> 16
+                        | 6 | 16 -> 16
                         | _ -> Log.err (fun m -> m "Unexpected value when reading the IP addr size (%d)" v); 0
                 in
                 let _timestamp = Cstruct.BE.get_uint32 payload 0 in
@@ -272,30 +280,26 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let (consumed_size, router_aval) = parse_router_addr n_router_addr (Cstruct.shift payload (6+my_alen+1)) 0 Cstruct.empty in
 
                 (* for testing purpose, suppose we only have 1 IPv4 at the begining in router_aval... *)
-                write tls (netinfo circID my_aval (Cstruct.sub router_aval 0 4)) >>= fun _ ->
+                write tls (netinfo cell.circID my_aval (Cstruct.sub router_aval 0 4)) >>= fun _ ->
 
-                proceed_next tls (cell_of_payload (Cstruct.shift payload (Int.max payload_len (6+my_alen+1+consumed_size))))
+                proceed_next tls (cell_of_cs (Cstruct.shift payload (Int.max payload_len (6+my_alen+1+consumed_size))))
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
                 Log.info (fun m -> m "DESTROY received: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
-                proceed_next tls (cell_of_payload (Cstruct.shift payload payload_len))
+                proceed_next tls (cell_of_cs (Cstruct.shift payload payload_len))
 
             | _ ->
                 Log.info (fun m -> m "Received UNK packet...");
                 Cstruct.hexdump payload ;
                 assert false
+         end
       in
       proceed_next tls cell
 
-    let extract_keys nodeid ntor_onion_key secret my_pubkey payload =
-      let rec proceed_next payload nodeid ntor_onion_key secret my_pubkey =
-          let len_payload = Cstruct.length payload in
-          if len_payload < 3 then Lwt.return Cstruct.empty
-          else begin
-            let _circuit_id = Cstruct.sub payload 0 2 in
-            let typ = tor_command_of_uint8 (Cstruct.get_uint8 payload 2) in
-            let payload = Cstruct.shift payload 3 in
-            match typ with
+    let extract_keys nodeid ntor_onion_key secret my_pubkey cell =
+      let rec proceed_next nodeid ntor_onion_key secret my_pubkey cell =
+            let payload = cell.payload in
+            match cell.command with
             | CREATED2 ->
                 let len = Cstruct.BE.get_uint16 payload 0 in
                 let payload = Cstruct.shift payload 2 in
@@ -388,15 +392,14 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
                 Log.info (fun m -> m "extract keys DESTROY received: %s" (tor_error_to_string (uint8_to_tor_error reason))) ;
-                proceed_next (Cstruct.shift payload payload_len) nodeid ntor_onion_key secret my_pubkey
+                proceed_next nodeid ntor_onion_key secret my_pubkey (cell_of_cs (Cstruct.shift payload payload_len))
 
             | _ ->
                 Log.info (fun m -> m "Received UNK packet...");
                 Cstruct.hexdump payload ;
                 assert false
-          end
       in
-      proceed_next payload nodeid ntor_onion_key secret my_pubkey
+      proceed_next nodeid ntor_onion_key secret my_pubkey cell
 
 (*
    When used in the ntor handshake, the first HASH_LEN bytes form the
@@ -429,7 +432,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
     (* 5.1.2. EXTEND and EXTENDED *
        6.1. Relay cells *)
     (* extend the circuit to the next onion router, returns the updated outbound digest and the cell*)
-    let extend2 : Int.t -> key_ctx list -> Digestif.SHA1.ctx -> Cstruct.t -> Digestif.SHA1.ctx * cell =
+    let extend2 : int -> key_ctx list -> Digestif.SHA1.ctx -> Cstruct.t -> Digestif.SHA1.ctx * cell =
     fun circID keys_f df_ctx payload ->
 (*
    The payload of each unencrypted RELAY cell consists of:
@@ -469,7 +472,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         Cstruct.blit_from_string digest_update 0 payload (1+2+2) 4 ;
 
         (* already padded for the digest computation *)
-        let relay_cell = create_packet circID RELAY_EARLY payload_encrypted ~padding:false in
+        let relay_cell = new_cell circID RELAY_EARLY payload ~padding:false in
         df_ctx, encrypt_cell relay_cell keys_f
 
 
@@ -520,17 +523,17 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 (* assert circID <> 0 and was never used with the first node *)
 
                 send_cell tls (version circID) >>= fun reply_cell ->
-                assert reply_cell.circID = circID ;
-                negotiate_version tls circID reply_cell >>= fun _ ->
+                negotiate_version tls reply_cell >>= fun _ ->
 
                 let nodeid = Cstruct.of_string (Hex.to_string first_node.fingerprint) in
                 let ntor_onion_key = Cstruct.of_string first_node.ntor_onion_key in
 
                 let create2_pkt = create2 circID nodeid ntor_onion_key my_pubkey in
                 send_cell tls create2_pkt >>= fun reply_cell ->
+                assert (reply_cell.circID = circID) ;
                 extract_keys nodeid ntor_onion_key secret my_pubkey reply_cell >>= fun cs ->
 
-                let df_ctx, _db_ctx, kf, _kb = extract_ctx cs in
+                let df_ctx, _db_ctx, kf, kb = extract_ctx cs in
 
         (* 6. *)
                 (* Should I need to update my keys? *)
@@ -586,8 +589,9 @@ Log.info (fun m -> m "will extend to %a:%d" Ipaddr.pp nodeip nodeport);
                 let _df_ctx, extend2_pkt = extend2 circID [kf] df_ctx extend2_payload in
                 (* here we must use the nodeid and ntor_onion_key of the second router... *)
                 send_cell tls extend2_pkt >>= fun reply_cell ->
-                decrypt reply_cell >>= fun cs ->
-                extract_keys nodeid ntor_onion_key secret my_pubkey cs >>= fun cs ->
+                assert (reply_cell.circID = circID) ;
+                let decrypted_cell = decrypt_cell reply_cell [kb] in
+                extract_keys nodeid ntor_onion_key secret my_pubkey decrypted_cell >>= fun cs ->
                 Cstruct.hexdump cs ;
 
 Log.info (fun m -> m "then should extend to next...");

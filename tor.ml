@@ -110,14 +110,16 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
          Transmit the encrypted cell to node 1.
 *)
     (* WARNING: to works correctly, the keys should be in !reverse circuit! order (last node, first key) *)
-    let rec encrypt_cell cell = function
-        | [] -> cell
+    let rec encrypt_cell cell acc = function
+        | [] -> cell, List.rev acc (* we pushed front the keys, so we need to reverse them now *)
         | k::t ->
 Log.info( fun f -> f "encrypt");
             (* encrypt the payload and update the cell *)
             let payload_encrypted = Mirage_crypto.Cipher_block.AES.CTR.encrypt ~key:k.key ~ctr:k.ctr cell.payload in
             assert (Cstruct.length payload_encrypted = Cstruct.length cell.payload) ;
-            encrypt_cell {cell with payload = payload_encrypted} t
+            (* update the key context *)
+            let key = {k with ctr = Mirage_crypto.Cipher_block.AES.CTR.next_ctr ~ctr:k.ctr payload_encrypted} in
+            encrypt_cell {cell with payload = payload_encrypted} (key::acc) t
 
 (*
    When a relay cell arrives at an OP, the OP decrypts the payload
@@ -132,16 +134,19 @@ Log.info( fun f -> f "encrypt");
 *)
     (* Take a cell and gives the decrypted payload *)
     (* WARNING: to works correctly, the keys should be in !circuit! order *)
-    let rec decrypt_cell cell = function
-        | [] -> cell
+    let rec decrypt_cell cell acc = function
+        | [] -> cell, List.rev acc (* we pushed front the keys, so we need to reverse them now *)
         | k::t ->
+Log.info( fun f -> f "decrypt");
             (* decrypt the payload and update the cell *)
             let payload_decrypted = Mirage_crypto.Cipher_block.AES.CTR.decrypt ~key:k.key ~ctr:k.ctr cell.payload in
             assert (Cstruct.length payload_decrypted = Cstruct.length cell.payload) ;
-Log.info( fun f -> f "decrypt");
+            (* update the key context *)
+            let key = {k with ctr = Mirage_crypto.Cipher_block.AES.CTR.next_ctr ~ctr:k.ctr payload_decrypted} in
+
             if ((tor_command_of_uint8 (Cstruct.get_uint8 payload_decrypted 2)) != MUST_BE_DROP) then
-            {cell with payload = payload_decrypted}
-            else decrypt_cell {cell with payload = payload_decrypted} t
+            {cell with payload = payload_decrypted}, (key::acc) (* TODO: we don't keep the index of the router that replied *)
+            else decrypt_cell {cell with payload = payload_decrypted} (key::acc) t
 
     let random_cs ?(len = Random.int 128) () =
         let cs = Cstruct.create len in
@@ -675,13 +680,13 @@ in
                         (* Create the payload, unencrypted, with the digest accorded to the last router known *)
                         let df_ctx, relay_cell = extend2 circID (List.hd df_ctxs) extend2_payload in
                         (* Encrypt with all the forward keys (from last node to first node)*)
-                        let onion_skin = encrypt_cell relay_cell kfs in
+                        let onion_skin, kfs = encrypt_cell relay_cell [] kfs in
 
                         send_cell tls onion_skin >>= fun reply_cell ->
                         assert (reply_cell.circID = circID) ;
                         
                         (* Decrypt with all the backward keys (from first node to last node) *)
-                        let decrypted_cell = decrypt_cell reply_cell kbs in
+                        let decrypted_cell, kbs = decrypt_cell reply_cell [] kbs in
 Cstruct.hexdump decrypted_cell.payload ;
                         (* Extract the keys from the reply *)
                         let rev_db_ctxs = List.rev db_ctxs in

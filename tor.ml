@@ -673,7 +673,7 @@ Cstruct.hexdump decrypted_cell.payload ;
 
                         (* Update the current digest contexts before computing new ones *)
                         let df_ctxs = df_ctx::List.tl df_ctxs in
-                        let db_ctxs = db_ctx::List.rev (List.tl (List.rev db_ctxs)) in
+                        let db_ctxs = List.rev (db_ctx::List.tl (List.rev db_ctxs)) in
                         
                         let df_ctx, db_ctx, kf, kb = extract_ctx cs in
 

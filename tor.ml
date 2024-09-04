@@ -75,12 +75,21 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
 
     let write tls cell =
         TLS.write tls (cell_to_cs cell) >>= function
-        | Ok () -> Log.info(fun f -> f "sending:"); Cstruct.hexdump cell.payload; Lwt.return (Ok())
+        | Ok () ->
+            Log.info(fun f -> f "sending %s on circ %d:" (tor_command_to_string cell.command) cell.circID);
+            Cstruct.hexdump cell.payload;
+            Lwt.return (Ok())
         | Error e -> Log.info(fun f -> f "send err: %a" TLS.pp_write_error e); Lwt.return (Error e)
 
     let read tls =
         TLS.read tls >>= function
-        | Ok (`Data buf) -> Log.info(fun f -> f "reading:"); Cstruct.hexdump buf; Lwt.return (Ok buf)
+        | Ok (`Data buf) ->
+            assert (Cstruct.length buf >= 3);
+            let circID = Cstruct.BE.get_uint16 buf 0 in
+            let cmd = tor_command_of_uint8 (Cstruct.get_uint8 buf 2) in
+            Log.info(fun f -> f "reading %s on circ %d:" (tor_command_to_string cmd) circID);
+            Cstruct.hexdump buf;
+            Lwt.return (Ok buf)
         | Ok `Eof -> Log.info(fun f -> f "recv eof"); Lwt.return (Ok Cstruct.empty)
         | Error e -> Log.info(fun f -> f "recv err: %a" TLS.pp_error e); Lwt.return (Error e)
 

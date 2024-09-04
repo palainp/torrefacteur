@@ -67,6 +67,27 @@
     | AUTHORIZE -> 132
     | MUST_BE_DROP -> 255
 
+  let tor_command_to_string = function
+    | PADDING -> "PADDING"
+    | CREATE -> "CREATE"
+    | CREATED -> "CREATED"
+    | RELAY -> "RELAY"
+    | DESTROY -> "DESTROY"
+    | CREATE_FAST -> "CREATE_FAST"
+    | CREATED_FAST -> "CREATED_FAST"
+    | NETINFO -> "NETINFO"
+    | RELAY_EARLY -> "RELAY_EARLY"
+    | CREATE2 -> "CREATE2"
+    | CREATED2 -> "CREATED2"
+    | PADDING_NEGOTIATE -> "PADDING_NEGOTIATE"
+    | VERSIONS -> "VERSIONS"
+    | VPADDING -> "VPADDING"
+    | CERTS -> "CERTS"
+    | AUTH_CHALLENGE -> "AUTH_CHALLENGE"
+    | AUTHENTICATE -> "AUTHENTICATE"
+    | AUTHORIZE -> "AUTHORIZE"
+    | MUST_BE_DROP -> "MUST_BE_DROP"
+
   let tor_command_of_uint8 = function
     | 0 -> PADDING
     | 1 -> CREATE

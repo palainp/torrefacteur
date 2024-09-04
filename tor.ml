@@ -475,7 +475,28 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         let relay_cell = new_cell circID RELAY_EARLY payload ~padding:false in
         df_ctx, encrypt_cell relay_cell keys_f
 
-
+    let validate_extended2 nodeid ntor_onion_key secret my_pubkey cell =
+        assert (cell.command = RELAY || cell.command = RELAY_EARLY);
+        let payload = cell.payload in
+        let relay_cmd = tor_relay_command_of_uint8 (Cstruct.get_uint8 payload 0) in
+        match relay_cmd with
+            | RELAY_EXTENDED2 ->
+                Cstruct.hexdump payload ;
+                let recognize = Cstruct.BE.get_uint16 payload 1 in
+                assert (recognize = 0) ;
+                let streamid = Cstruct.BE.get_uint16 payload 3 in
+                assert (streamid = 0) ;
+                let _digest = Cstruct.sub payload 5 4 in
+                (* assert digest *)
+                let len = Cstruct.BE.get_uint16 payload 9 in
+                Log.info(fun f -> f "len is %d" len);
+                let extended2_payload = Cstruct.sub payload 11 len in
+                extract_keys nodeid ntor_onion_key secret my_pubkey {cell with command = CREATED2 ; payload = extended2_payload}
+            | _ ->
+                Log.info (fun m -> m "Received UNK relay command...");
+                Cstruct.hexdump payload ;
+                assert false
+        
 (*
       3. If not already connected to the first router in the chain,
          open a new connection to that router.
@@ -591,7 +612,7 @@ Log.info (fun m -> m "will extend to %a:%d" Ipaddr.pp nodeip nodeport);
                 send_cell tls extend2_pkt >>= fun reply_cell ->
                 assert (reply_cell.circID = circID) ;
                 let decrypted_cell = decrypt_cell reply_cell [kb] in
-                extract_keys nodeid ntor_onion_key secret my_pubkey decrypted_cell >>= fun cs ->
+                validate_extended2 nodeid ntor_onion_key secret my_pubkey decrypted_cell >>= fun cs ->
                 Cstruct.hexdump cs ;
 
 Log.info (fun m -> m "then should extend to next...");

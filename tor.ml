@@ -475,19 +475,24 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         let relay_cell = new_cell circID RELAY_EARLY payload ~padding:false in
         df_ctx, encrypt_cell relay_cell keys_f
 
-    let validate_extended2 nodeid ntor_onion_key secret my_pubkey cell =
+    let validate_extended2 db_ctx nodeid ntor_onion_key secret my_pubkey cell =
         assert (cell.command = RELAY || cell.command = RELAY_EARLY);
         let payload = cell.payload in
         let relay_cmd = tor_relay_command_of_uint8 (Cstruct.get_uint8 payload 0) in
         match relay_cmd with
             | RELAY_EXTENDED2 ->
-                Cstruct.hexdump payload ;
                 let recognize = Cstruct.BE.get_uint16 payload 1 in
                 assert (recognize = 0) ;
+
                 let streamid = Cstruct.BE.get_uint16 payload 3 in
                 assert (streamid = 0) ;
-                let _digest = Cstruct.sub payload 5 4 in
-                (* assert digest *)
+
+                let digest = Cstruct.to_string (Cstruct.sub payload 5 4) in
+                Cstruct.blit_from_string (String.make 4 '\000') 0 payload (1+2+2) 4 ;
+                let db_ctx = Digestif.SHA1.feed_string db_ctx (Cstruct.to_string payload) in
+                let digest_update = String.sub (Digestif.SHA1.to_raw_string (Digestif.SHA1.get db_ctx)) 0 4 in
+                assert (digest = digest_update) ;
+
                 let len = Cstruct.BE.get_uint16 payload 9 in
                 Log.info(fun f -> f "len is %d" len);
                 let extended2_payload = Cstruct.sub payload 11 len in
@@ -513,9 +518,11 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
          the circuit to R.
 *)
     let connect_circuit stack circuit g =
-        (* TODO: if circuit.relay is empty, only use the exit node... *)
         (* 3. *)
-        assert (List.length circuit.relay >= 3);
+        (* For privacy reason, the circuit should have at least 2 relays (called guard & middle)
+        and at most 7 relays (extend2 uses RELAY_EARLY and there could not be more than 8 RELAY_EARLY cells
+        on the same outbound circuit) *)
+        assert (List.length circuit.relay >= 2 && List.length circuit.relay <=7);
         let first_node = List.hd circuit.relay in
         let nodeip = first_node.ip_addr in
         let nodeport = first_node.port in
@@ -554,7 +561,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 assert (reply_cell.circID = circID) ;
                 extract_keys nodeid ntor_onion_key secret my_pubkey reply_cell >>= fun cs ->
 
-                let df_ctx, _db_ctx, kf, kb = extract_ctx cs in
+                let df_ctx, db_ctx, kf, kb = extract_ctx cs in
 
         (* 6. *)
                 (* Should I need to update my keys? *)
@@ -612,10 +619,17 @@ Log.info (fun m -> m "will extend to %a:%d" Ipaddr.pp nodeip nodeport);
                 send_cell tls extend2_pkt >>= fun reply_cell ->
                 assert (reply_cell.circID = circID) ;
                 let decrypted_cell = decrypt_cell reply_cell [kb] in
-                validate_extended2 nodeid ntor_onion_key secret my_pubkey decrypted_cell >>= fun cs ->
+                validate_extended2 db_ctx nodeid ntor_onion_key secret my_pubkey decrypted_cell >>= fun cs ->
                 Cstruct.hexdump cs ;
 
-Log.info (fun m -> m "then should extend to next...");
+                let exit_node = circuit.exit in
+                let _nodeid = Cstruct.of_string (Hex.to_string exit_node.fingerprint) in
+                let nodeip = List.hd exit_node.ip_addr in
+                (* let nodeport = exit_node.port in *)
+Log.info (fun m -> m "will extend exit to %a" Ipaddr.pp nodeip);
+
+                (* let ntor_onion_key = Cstruct.of_string exit_node.ntor_onion_key in *)
+                (* let onion_id_ed25519 = Cstruct.of_string exit_node.identity_ed25519 in *)
 
                 Lwt.return_unit
 end

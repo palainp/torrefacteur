@@ -20,7 +20,7 @@ module Log = (val Logs.src_log src : Logs.LOG)
 module Exit = struct
 
     type t = {
-        id : Hex.t ;
+        fingerprint : Hex.t ;
         ip_addr : Ipaddr.t list ;
     }
 
@@ -50,13 +50,13 @@ module Exit = struct
                 if ( String.starts_with ~prefix:"ExitNode" s ) then (* a new id *)
                     let line = String.split_on_char ' ' s in
                     let id = List.nth line 1 in
-                    read_entries db (List.cons {id=Hex.of_string id ; ip_addr=[]} acc)
+                    read_entries db (List.cons {fingerprint=Hex.of_string id ; ip_addr=[]} acc)
                 else if ( String.starts_with ~prefix:"ExitAddress" s ) then (* add a new ip for the last id *)
                     (* what should we have to do with those multiple ips ? *)
                     let last_item = List.hd acc in
                     let line = String.split_on_char ' ' s in
                     let ip = List.nth line 1 in
-                    Log.debug (fun f -> f "Adding/Updating exit node %s (%s/%s)" s (Hex.to_string last_item.id) ip) ;
+                    Log.debug (fun f -> f "Adding/Updating exit node %s (%s/%s)" s (Hex.to_string last_item.fingerprint) ip) ;
                     read_entries db (List.cons {last_item with ip_addr=List.cons (Ipaddr.of_string_exn ip) last_item.ip_addr} (List.tl acc))
                 else
                     read_entries db acc
@@ -75,7 +75,7 @@ module Exit = struct
             | [] -> ()
         in
         match db with
-        | e::db -> Log.info (fun f -> f "Exit Node %s : " (Hex.to_string e.id)); print_ip (e.ip_addr) ; print_list db
+        | e::db -> Log.info (fun f -> f "Exit Node %s : " (Hex.to_string e.fingerprint)); print_ip (e.ip_addr) ; print_list db
         | [] -> ()
 
 end

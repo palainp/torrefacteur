@@ -76,8 +76,8 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
     let write tls cell =
         TLS.write tls (cell_to_cs cell) >>= function
         | Ok () ->
-            Log.info(fun f -> f "sending %s on circ %d:" (tor_command_to_string cell.command) cell.circID);
-            Cstruct.hexdump cell.payload;
+            (* Log.info(fun f -> f "sending %s on circ %d:" (tor_command_to_string cell.command) cell.circID); *)
+            (* Cstruct.hexdump cell.payload; *)
             Lwt.return (Ok())
         | Error e -> Log.info(fun f -> f "send err: %a" TLS.pp_write_error e); Lwt.return (Error e)
 
@@ -85,10 +85,10 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         TLS.read tls >>= function
         | Ok (`Data buf) ->
             assert (Cstruct.length buf >= 3);
-            let circID = Cstruct.BE.get_uint16 buf 0 in
-            let cmd = tor_command_of_uint8 (Cstruct.get_uint8 buf 2) in
-            Log.info(fun f -> f "reading %s on circ %d:" (tor_command_to_string cmd) circID);
-            Cstruct.hexdump buf;
+            (* let circID = Cstruct.BE.get_uint16 buf 0 in *)
+            (* let cmd = tor_command_of_uint8 (Cstruct.get_uint8 buf 2) in *)
+            (* Log.info(fun f -> f "reading %s on circ %d:" (tor_command_to_string cmd) circID); *)
+            (* Cstruct.hexdump buf; *)
             Lwt.return (Ok buf)
         | Ok `Eof -> Log.info(fun f -> f "recv eof"); Lwt.return (Ok Cstruct.empty)
         | Error e -> Log.info(fun f -> f "recv err: %a" TLS.pp_error e); Lwt.return (Error e)
@@ -109,20 +109,21 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             Encrypt with Kf_I.
          Transmit the encrypted cell to node 1.
 *)
-    (* WARNING: to works correctly, the keys should be in !reverse circuit! order *)
+    (* WARNING: to works correctly, the keys should be in !reverse circuit! order (last node, first key) *)
     let rec encrypt_cell cell = function
         | [] -> cell
         | k::t ->
-            (* encrypt the payload and create the cell *)
+            (* encrypt the payload and update the cell *)
             let payload_encrypted = Mirage_crypto.Cipher_block.AES.CTR.encrypt ~key:k.key ~ctr:k.ctr cell.payload in
             assert (Cstruct.length payload_encrypted = Cstruct.length cell.payload) ;
-            encrypt_cell {cell with payload=payload_encrypted} t
+            encrypt_cell {cell with payload = payload_encrypted} t
                     
     (* Take a cell and gives the decrypted payload *)
     (* WARNING: to works correctly, the keys should be in !circuit! order *)
     let rec decrypt_cell cell = function
         | [] -> cell
         | k::t ->
+            (* decrypt the payload and update the cell *)
             let payload_decrypted = Mirage_crypto.Cipher_block.AES.CTR.decrypt ~key:k.key ~ctr:k.ctr cell.payload in
             assert (Cstruct.length payload_decrypted = Cstruct.length cell.payload) ;
             decrypt_cell {cell with payload = payload_decrypted} t
@@ -618,7 +619,7 @@ in
                         let nodeid = Cstruct.of_string (Hex.to_string current.fingerprint) in
                         let nodeip = current.ip_addr in
                         let nodeport = current.port in
-                        Log.info (fun m -> m " will extend to %a:%d" Ipaddr.pp nodeip nodeport);
+                        Log.info (fun m -> m " will extend to %a:%d (%d more to go)" Ipaddr.pp nodeip nodeport (List.length relays));
 
                         let ntor_onion_key = Cstruct.of_string current.ntor_onion_key in
                         let onion_id_ed25519 = Cstruct.of_string current.identity_ed25519 in
@@ -660,14 +661,15 @@ in
                         let df_ctx, relay_cell = extend2 circID (List.hd df_ctxs) extend2_payload in
                         (* Encrypt with all the forward keys *)
                         let onion_skin = encrypt_cell relay_cell kfs in
+
                         send_cell tls onion_skin >>= fun reply_cell ->
                         assert (reply_cell.circID = circID) ;
                         
                         (* Decrypt with all the backward keys (in reverse order) *)
                         let decrypted_cell = decrypt_cell reply_cell kbs in
-
+Cstruct.hexdump decrypted_cell.payload ;
                         (* Extract the keys from the reply *)
-                        let db_ctx, cs = validate_extended2 db_ctx nodeid ntor_onion_key secret my_pubkey decrypted_cell in
+                        let db_ctx, cs = validate_extended2 (List.hd (List.rev db_ctxs)) nodeid ntor_onion_key secret my_pubkey decrypted_cell in
 
                         (* Update the current digest contexts before computing new ones *)
                         let df_ctxs = df_ctx::List.tl df_ctxs in

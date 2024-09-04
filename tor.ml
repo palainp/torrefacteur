@@ -113,11 +113,23 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
     let rec encrypt_cell cell = function
         | [] -> cell
         | k::t ->
+Log.info( fun f -> f "encrypt");
             (* encrypt the payload and update the cell *)
             let payload_encrypted = Mirage_crypto.Cipher_block.AES.CTR.encrypt ~key:k.key ~ctr:k.ctr cell.payload in
             assert (Cstruct.length payload_encrypted = Cstruct.length cell.payload) ;
             encrypt_cell {cell with payload = payload_encrypted} t
-                    
+
+(*
+   When a relay cell arrives at an OP, the OP decrypts the payload
+   with the stream cipher as follows:
+
+         OP receives relay cell from node 1:
+            For I=1...N, where N is the final node on the circuit:
+                Decrypt with Kb_I.
+                If the payload is recognized (see section 6.1), then:
+                    The sending node is I.
+                    Stop and process the payload.
+*)
     (* Take a cell and gives the decrypted payload *)
     (* WARNING: to works correctly, the keys should be in !circuit! order *)
     let rec decrypt_cell cell = function
@@ -126,7 +138,10 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
             (* decrypt the payload and update the cell *)
             let payload_decrypted = Mirage_crypto.Cipher_block.AES.CTR.decrypt ~key:k.key ~ctr:k.ctr cell.payload in
             assert (Cstruct.length payload_decrypted = Cstruct.length cell.payload) ;
-            decrypt_cell {cell with payload = payload_decrypted} t
+Log.info( fun f -> f "decrypt");
+            if ((tor_command_of_uint8 (Cstruct.get_uint8 payload_decrypted 2)) != MUST_BE_DROP) then
+            {cell with payload = payload_decrypted}
+            else decrypt_cell {cell with payload = payload_decrypted} t
 
     let random_cs ?(len = Random.int 128) () =
         let cs = Cstruct.create len in
@@ -659,21 +674,23 @@ in
 
                         (* Create the payload, unencrypted, with the digest accorded to the last router known *)
                         let df_ctx, relay_cell = extend2 circID (List.hd df_ctxs) extend2_payload in
-                        (* Encrypt with all the forward keys *)
+                        (* Encrypt with all the forward keys (from last node to first node)*)
                         let onion_skin = encrypt_cell relay_cell kfs in
 
                         send_cell tls onion_skin >>= fun reply_cell ->
                         assert (reply_cell.circID = circID) ;
                         
-                        (* Decrypt with all the backward keys (in reverse order) *)
+                        (* Decrypt with all the backward keys (from first node to last node) *)
                         let decrypted_cell = decrypt_cell reply_cell kbs in
 Cstruct.hexdump decrypted_cell.payload ;
                         (* Extract the keys from the reply *)
-                        let db_ctx, cs = validate_extended2 (List.hd (List.rev db_ctxs)) nodeid ntor_onion_key secret my_pubkey decrypted_cell in
+                        let rev_db_ctxs = List.rev db_ctxs in
+                        let db_ctx, cs = validate_extended2 (List.hd rev_db_ctxs) nodeid ntor_onion_key secret my_pubkey decrypted_cell in
 
-                        (* Update the current digest contexts before computing new ones *)
+                        (* Update the current digest contexts before computing new ones
+                        I keep the same ordering as the keys, but we can also pushfront the dbs... *)
                         let df_ctxs = df_ctx::List.tl df_ctxs in
-                        let db_ctxs = List.rev (db_ctx::List.tl (List.rev db_ctxs)) in
+                        let db_ctxs = List.rev (db_ctx::List.tl rev_db_ctxs) in
                         
                         let df_ctx, db_ctx, kf, kb = extract_ctx cs in
 

@@ -143,10 +143,12 @@ Log.info( fun f -> f "decrypt");
             assert (Cstruct.length payload_decrypted = Cstruct.length cell.payload) ;
             (* update the key context *)
             let key = {k with ctr = Mirage_crypto.Cipher_block.AES.CTR.next_ctr ~ctr:k.ctr payload_decrypted} in
-
+(* TODO: Check if the payload is recognized
             if ((tor_command_of_uint8 (Cstruct.get_uint8 payload_decrypted 2)) != MUST_BE_DROP) then
             {cell with payload = payload_decrypted}, (key::acc) (* TODO: we don't keep the index of the router that replied *)
             else decrypt_cell {cell with payload = payload_decrypted} (key::acc) t
+*)
+            decrypt_cell {cell with payload = payload_decrypted} (key::acc) t
 
     let random_cs ?(len = Random.int 128) () =
         let cs = Cstruct.create len in

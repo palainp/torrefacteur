@@ -180,11 +180,14 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
       2. Choose a chain of (N-1) onion routers (R_1...R_N-1) to constitute
          the path, such that no router appears in the path twice.
 *)
-    let create_circuit exit relay n =
-        (* assert n>= 1 *)
+    let create_circuit relay n =
+        (* For privacy reason, the circuit should have at least 2 relays (called guard & middle)
+        and at most 7 relays (extend2 uses RELAY_EARLY and there could not be more than 8 RELAY_EARLY cells
+        on the same outbound circuit) *)
+        assert (n >= 3 && n <=7);
         (* 1. *)
-        let rnd_exit = Random.int (List.length exit) in
-        let circuit = Circuits.create (List.nth exit rnd_exit) in
+        (* TODO: chose an exit relay with sufficient permissions *)
+        let circuit = Circuits.create in
         (* 2. *)
         let rec add_relays n circuit =
             match n with
@@ -196,7 +199,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let circuit = Circuits.add_relay circuit (List.nth relay rnd_relay) in
                 add_relays (x-1) circuit
         in
-        Lwt.return (add_relays (n-1) circuit)
+        Lwt.return (add_relays n circuit)
 
 
     let negotiate_version tls cell =
@@ -387,7 +390,7 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                    hidden service protocol) *)
                 let cokm = Hkdf.expand ~hash:`SHA256 ~prk:cprk ~info:m_expand (20+20+16+16) in
    
-                Lwt.return cokm
+                cokm
 
             | DESTROY ->
                 let reason = Cstruct.get_uint8 payload 0 in
@@ -431,9 +434,9 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
 
     (* 5.1.2. EXTEND and EXTENDED *
        6.1. Relay cells *)
-    (* extend the circuit to the next onion router, returns the updated outbound digest and the cell*)
-    let extend2 : int -> key_ctx list -> Digestif.SHA1.ctx -> Cstruct.t -> Digestif.SHA1.ctx * cell =
-    fun circID keys_f df_ctx payload ->
+    (* extend the circuit to the next onion router, returns the updated outbound digest and the payload *)
+    let extend2 : int -> Digestif.SHA1.ctx -> Cstruct.t -> Digestif.SHA1.ctx * cell =
+    fun circID df_ctx payload ->
 (*
    The payload of each unencrypted RELAY cell consists of:
 
@@ -472,9 +475,9 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         Cstruct.blit_from_string digest_update 0 payload (1+2+2) 4 ;
 
         (* already padded for the digest computation *)
-        let relay_cell = new_cell circID RELAY_EARLY payload ~padding:false in
-        df_ctx, encrypt_cell relay_cell keys_f
+        df_ctx, new_cell circID RELAY_EARLY payload ~padding:false
 
+    (* Validate the EXTENDED2 cell (check the digest), returns the updated digest and the extract keys from the handshake *)
     let validate_extended2 db_ctx nodeid ntor_onion_key secret my_pubkey cell =
         assert (cell.command = RELAY || cell.command = RELAY_EARLY);
         let payload = cell.payload in
@@ -494,9 +497,9 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 assert (digest = digest_update) ;
 
                 let len = Cstruct.BE.get_uint16 payload 9 in
-                Log.info(fun f -> f "len is %d" len);
                 let extended2_payload = Cstruct.sub payload 11 len in
-                extract_keys nodeid ntor_onion_key secret my_pubkey {cell with command = CREATED2 ; payload = extended2_payload}
+                db_ctx, extract_keys nodeid ntor_onion_key secret my_pubkey {cell with command = CREATED2 ; payload = extended2_payload}
+
             | _ ->
                 Log.info (fun m -> m "Received UNK relay command...");
                 Cstruct.hexdump payload ;
@@ -522,7 +525,35 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
         (* For privacy reason, the circuit should have at least 2 relays (called guard & middle)
         and at most 7 relays (extend2 uses RELAY_EARLY and there could not be more than 8 RELAY_EARLY cells
         on the same outbound circuit) *)
-        assert (List.length circuit.relay >= 2 && List.length circuit.relay <=7);
+        assert (List.length circuit.relay >= 3 && List.length circuit.relay <=7);
+
+(* --------------- *)
+(* test: hardcoded exit node (thank you i8t!), here for simplicity I just append with a relay... *)
+let nodeip = Ipaddr.of_string_exn "185.84.31.254" in
+let nodeport = 9000 in
+let id_ed25519 = match Base64.decode ~pad:false "zE3xHEUziUbrZ9xUGmFKJd+jvef8/mUrfnu5j6nc+HA" with
+                 | Error (`Msg _) ->
+                   ""
+                 | Ok k -> k
+in
+let fingerprint = `Hex "2C3071872DA75C4BA366762336F31ABADCD9A6A8" in
+let ntor_onion_key = match Base64.decode ~pad:false "yYd03XwIzUloEUVKHJzI7sIxP7uYuEbTZvc+N4nn50w" with
+                 | Error (`Msg _) ->
+                   ""
+                 | Ok k -> k
+in
+
+        let exit_node : Nodes.Relay.t = {
+                id = "my_exit" ;
+                ip_addr = nodeip ;
+                port = nodeport ;
+                fingerprint = fingerprint ;
+                ntor_onion_key = ntor_onion_key ;
+                identity_ed25519 = id_ed25519 ;
+            } in
+        let circuit = {relay = List.append circuit.relay [exit_node] } in
+(* --------------- *)
+
         let first_node = List.hd circuit.relay in
         let nodeip = first_node.ip_addr in
         let nodeport = first_node.port in
@@ -559,77 +590,87 @@ module Make (Rand: Mirage_random.S) (Stack: Tcpip.Stack.V4V6) (Clock: Mirage_clo
                 let create2_pkt = create2 circID nodeid ntor_onion_key my_pubkey in
                 send_cell tls create2_pkt >>= fun reply_cell ->
                 assert (reply_cell.circID = circID) ;
-                extract_keys nodeid ntor_onion_key secret my_pubkey reply_cell >>= fun cs ->
+                let cs = extract_keys nodeid ntor_onion_key secret my_pubkey reply_cell in
 
                 let df_ctx, db_ctx, kf, kb = extract_ctx cs in
 
         (* 6. *)
-                (* Should I need to update my keys? *)
-                (* let (secret, my_pubkey) = Mirage_crypto_ec.X25519.gen_key ~g () in *)
+                let rec extend_circuit
+                : TLS.flow -> Digestif.SHA1.ctx list * Digestif.SHA1.ctx list * key_ctx list * key_ctx list ->
+                  Nodes.Relay.t list -> (Digestif.SHA1.ctx list * Digestif.SHA1.ctx list * key_ctx list * key_ctx list) Lwt.t
+                 = fun tls (df_ctxs, db_ctxs, kfs, kbs) relays ->
+                    match relays with
+                    | [] -> (* no more nodes *)
+                        Log.info(fun f -> f " ... all relays done!");
+                        (* assert the list have the same length and is equal to circuit length? *)
+                        Lwt.return (df_ctxs, db_ctxs, kfs, kbs)
 
-(* To extend the circuit by a single onion router R_M, the OP performs
-   these steps:
+                    | current::nexts -> (* extend2 to node h with the current kfs, kbs... *)
+                        let nodeid = Cstruct.of_string (Hex.to_string current.fingerprint) in
+                        let nodeip = current.ip_addr in
+                        let nodeport = current.port in
+                        Log.info (fun m -> m " will extend to %a:%d" Ipaddr.pp nodeip nodeport);
 
-      1. Create an onion skin, encrypted to R_M's public onion key.
-*)
-                let second_node = List.hd (List.tl circuit.relay) in
-                let nodeid = Cstruct.of_string (Hex.to_string second_node.fingerprint) in
-                let nodeip = second_node.ip_addr in
-                let nodeport = second_node.port in
-Log.info (fun m -> m "will extend to %a:%d" Ipaddr.pp nodeip nodeport);
-
-                let ntor_onion_key = Cstruct.of_string second_node.ntor_onion_key in
-                let onion_id_ed25519 = Cstruct.of_string second_node.identity_ed25519 in
+                        let ntor_onion_key = Cstruct.of_string current.ntor_onion_key in
+                        let onion_id_ed25519 = Cstruct.of_string current.identity_ed25519 in
 (*
-                [00] TLS-over-TCP, IPv4 address
-                     A four-byte IPv4 address plus two-byte ORPort
-                [01] TLS-over-TCP, IPv6 address
-                     A sixteen-byte IPv6 address plus two-byte ORPort
-                [02] Legacy identity
-                     A 20-byte SHA1 identity fingerprint. At most one may be listed.
-                [03] Ed25519 identity
-                     A 32-byte Ed25519 identity fingerprint. At most one may
-                     be listed.
-          
-                For purposes of indistinguishability, implementations SHOULD send
-                   these link specifiers, if using them, in this order: [00], [02], [03],
-                   [01].
+                        [00] TLS-over-TCP, IPv4 address
+                             A four-byte IPv4 address plus two-byte ORPort
+                        [01] TLS-over-TCP, IPv6 address
+                             A sixteen-byte IPv6 address plus two-byte ORPort
+                        [02] Legacy identity
+                             A 20-byte SHA1 identity fingerprint. At most one may be listed.
+                        [03] Ed25519 identity
+                             A 32-byte Ed25519 identity fingerprint. At most one may
+                             be listed.
+                  
+                        For purposes of indistinguishability, implementations SHOULD send
+                           these link specifiers, if using them, in this order: [00], [02], [03],
+                           [01].
 *)
-                assert (Cstruct.length onion_id_ed25519 = 32) ;
-                assert (Cstruct.length nodeid = 20) ;
+                        assert (Cstruct.length onion_id_ed25519 = 32) ;
+                        assert (Cstruct.length nodeid = 20) ;
+        
+                        let extend2_payload = Cstruct.concat [
+                            uint8_to_cs 3 ;                   (* NSPEC *)
+                              uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
+                                uint8_to_cs 6 ;
+                                Cstruct.of_string (Ipaddr.to_octets nodeip) ;
+                                uint16_to_cs nodeport ;
+                              uint8_to_cs 2 ;                   (* [02] Legacy identity *)
+                                uint8_to_cs 20 ;
+                                nodeid ;
+                              uint8_to_cs 3 ;                   (* [03] Ed25519 identity *)
+                                uint8_to_cs 32 ;
+                                onion_id_ed25519 ;
+                            (* the create2 handshake that will be forwarded *)
+                            handshake_client nodeid ntor_onion_key my_pubkey ;
+                        ] in
 
-                let extend2_payload = Cstruct.concat [
-                    uint8_to_cs 3 ;                   (* NSPEC *)
-                      uint8_to_cs 0 ;                   (* [00] TLS-over-TCP, IPv4 address *)
-                        uint8_to_cs 6 ;
-                        Cstruct.of_string (Ipaddr.to_octets nodeip) ;
-                        uint16_to_cs nodeport ;
-                      uint8_to_cs 2 ;                   (* [02] Legacy identity *)
-                        uint8_to_cs 20 ;
-                        nodeid ;
-                      uint8_to_cs 3 ;                   (* [03] Ed25519 identity *)
-                        uint8_to_cs 32 ;
-                        onion_id_ed25519 ;
-                    (* the create2 handshake that will be forwarded *)
-                    handshake_client nodeid ntor_onion_key my_pubkey ;
-                ] in
+                        (* Create the payload, unencrypted, with the digest accorded to the last router known *)
+                        let df_ctx, relay_cell = extend2 circID (List.hd df_ctxs) extend2_payload in
+                        (* Encrypt with all the forward keys *)
+                        let onion_skin = encrypt_cell relay_cell kfs in
+                        send_cell tls onion_skin >>= fun reply_cell ->
+                        assert (reply_cell.circID = circID) ;
+                        
+                        (* Decrypt with all the backward keys (in reverse order) *)
+                        let decrypted_cell = decrypt_cell reply_cell kbs in
 
-                let _df_ctx, extend2_pkt = extend2 circID [kf] df_ctx extend2_payload in
-                (* here we must use the nodeid and ntor_onion_key of the second router... *)
-                send_cell tls extend2_pkt >>= fun reply_cell ->
-                assert (reply_cell.circID = circID) ;
-                let decrypted_cell = decrypt_cell reply_cell [kb] in
-                validate_extended2 db_ctx nodeid ntor_onion_key secret my_pubkey decrypted_cell >>= fun cs ->
-                Cstruct.hexdump cs ;
+                        (* Extract the keys from the reply *)
+                        let db_ctx, cs = validate_extended2 db_ctx nodeid ntor_onion_key secret my_pubkey decrypted_cell in
 
-                let exit_node = circuit.exit in
-                let _nodeid = Cstruct.of_string (Hex.to_string exit_node.fingerprint) in
-                let nodeip = List.hd exit_node.ip_addr in
-                (* let nodeport = exit_node.port in *)
-Log.info (fun m -> m "will extend exit to %a" Ipaddr.pp nodeip);
+                        (* Update the current digest contexts before computing new ones *)
+                        let df_ctxs = df_ctx::List.tl df_ctxs in
+                        let db_ctxs = db_ctx::List.rev (List.tl (List.rev db_ctxs)) in
+                        
+                        let df_ctx, db_ctx, kf, kb = extract_ctx cs in
 
-                (* let ntor_onion_key = Cstruct.of_string exit_node.ntor_onion_key in *)
-                (* let onion_id_ed25519 = Cstruct.of_string exit_node.identity_ed25519 in *)
+                        extend_circuit tls (df_ctx::df_ctxs, List.append db_ctxs [db_ctx], kf::kfs, List.append kbs [kb]) nexts
+                in
 
+                extend_circuit tls ([df_ctx], [db_ctx], [kf], [kb]) (List.tl circuit.relay) >>= fun (_df_ctxs, _db_ctxs, _kfs, _kbs) ->
+
+                Log.info(fun f -> f "quit");
                 Lwt.return_unit
 end

@@ -34,10 +34,6 @@ module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.P
         Tor_db.get_file ctx "https://collector.torproject.org/index/index.json" >>= fun str ->
         let cfg_json = Ezjsonm.from_string str in
 
-        Tor_db.get_last_exit_list ctx cfg_json >>= fun exit_nodes ->
-        let exit_nodes = Nodes.Exit.parse_db exit_nodes in
-        (*Nodes.Exit.print_list exit_nodes ;*)
-
         Tor_db.get_last_relay_list ctx cfg_json >>= fun relay_nodes ->
         let relay_nodes = Nodes.Relay.parse_db relay_nodes in
         (*Nodes.Relay.print_list relay_nodes ;*)
@@ -45,7 +41,7 @@ module Main (Rand: Mirage_random.S) (Time: Mirage_time.S) (Clock: Mirage_clock.P
         (* Tor_db.get_file ctx "http://128.31.0.39:9231/tor/server/all" >>= fun relay -> *)
         (* let relay_nodes = Nodes.Relay.parse_db relay in *)
 
-        Tor.create_circuit exit_nodes relay_nodes 4 >>= fun circuit ->
+        Tor.create_circuit relay_nodes 3 >>= fun circuit ->
         (* as a current testing code create circuit outputs a string with all ips in the circuit... *)
         Log.info (fun f -> f "The circuit is %s" (Circuits.to_string circuit));
         Tor.connect_circuit stack circuit g >>= fun _ ->

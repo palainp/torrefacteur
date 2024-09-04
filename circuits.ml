@@ -18,15 +18,13 @@ let src = Logs.Src.create "tor-circuits" ~doc:"Circuits for tor protocol"
 module Log = (val Logs.src_log src : Logs.LOG)
 
 type t = {
-    exit : Nodes.Exit.t ;
     relay : Nodes.Relay.t list;
 }
 
-let create exit =
-    {exit = exit ; relay = []}
+let create = {relay = []}
 
 let add_relay circuit relay =
-    {exit = circuit.exit ; relay = (List.cons relay circuit.relay)}
+    {relay = (List.cons relay circuit.relay)}
 
 let to_string circuit =
     let rec relay_list relay acc =
@@ -34,4 +32,4 @@ let to_string circuit =
         | r::t -> String.concat "/" [(Nodes.Relay.to_string r) ; (relay_list t acc)]
         | [] -> acc
     in
-    String.concat "/" ["localhost" ; relay_list circuit.relay "" ; (Nodes.Exit.to_string circuit.exit)]
+    String.concat "/" ["localhost" ; relay_list circuit.relay "" ]
